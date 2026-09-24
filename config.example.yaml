@@ -1,0 +1,7 @@
+trajectories: /data/trajectories.jsonl
+video_root: /data/videos
+vst_model: /models/vst-sft
+reflection_api_url: https://api.deepseek.com
+reflection_model: deepseek-v4-flash
+output_dir: /data/run-output
+stage: all
