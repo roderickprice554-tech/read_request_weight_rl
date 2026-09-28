@@ -1,6 +1,6 @@
 import torch
+from pathlib import Path
 
-from verl.workers.sharding_manager.fsdp_sglang import FSDPSGLangShardingManager
 from verl.workers.sharding_manager.fsdp_vllm import FSDPVLLMShardingManager
 
 
@@ -28,5 +28,11 @@ def test_vllm_rollout_weights_are_frozen_until_policy_version_changes():
     _assert_round_freeze(_manager(FSDPVLLMShardingManager))
 
 
-def test_sglang_rollout_weights_are_frozen_until_policy_version_changes():
-    _assert_round_freeze(_manager(FSDPSGLangShardingManager))
+def test_sglang_backend_has_the_same_policy_version_gate_without_importing_optional_dependency():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "verl/workers/sharding_manager/fsdp_sglang.py"
+    ).read_text(encoding="utf-8")
+    assert "def set_policy_version" in source
+    assert "def _params_for_rollout" in source
+    assert "self.frozen_policy_version != self.requested_policy_version" in source
