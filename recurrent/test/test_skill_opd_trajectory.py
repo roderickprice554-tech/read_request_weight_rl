@@ -235,7 +235,7 @@ def test_episode_skill_supervises_non_key_memory_rows_but_never_final_row():
     reflection = parse_and_validate_reflection(
         '{"apply_opd":true,"episode_skill":"Track persistent entities.",'
         '"key_transitions":[{"transition_index":1,"kind":"correct",'
-        '"memory_attribute":"temporal_order","step_skill":"Preserve temporal order.","key_frames":[0]}]}',
+        '"memory_attribute":"temporal_order","step_skill":"Preserve temporal order.","key_frames":[2]}]}',
         trajectory,
         policy_version=9,
     )
