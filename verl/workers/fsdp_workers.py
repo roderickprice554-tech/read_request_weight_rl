@@ -670,6 +670,10 @@ class ActorRolloutRefWorker(Worker):
             "pad_token_id": self.generation_config.pad_token_id if self.generation_config is not None else self.tokenizer.pad_token_id,
         }
         prompts.meta_info.update(meta_info)
+        if hasattr(self.rollout_sharding_manager, "set_policy_version"):
+            self.rollout_sharding_manager.set_policy_version(
+                prompts.meta_info.get("policy_version")
+            )
         with self.rollout_sharding_manager:
             log_gpu_memory_usage("After entering rollout sharding manager", logger=logger)
 

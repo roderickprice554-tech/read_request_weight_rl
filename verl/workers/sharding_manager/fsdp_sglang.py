@@ -86,13 +86,29 @@ class FSDPSGLangShardingManager(BaseShardingManager):
             torch.cuda.set_rng_state(self.torch_random_states)
         else:
             self.gen_random_states = None
+        self.requested_policy_version = None
+        self.frozen_policy_version = None
+        self.frozen_params = None
+
+    def set_policy_version(self, policy_version):
+        self.requested_policy_version = policy_version
+
+    def _params_for_rollout(self, params):
+        if self.requested_policy_version is None:
+            return params
+        if self.frozen_policy_version != self.requested_policy_version:
+            self.frozen_params = {
+                key: value.detach().clone() for key, value in params.items()
+            }
+            self.frozen_policy_version = self.requested_policy_version
+        return self.frozen_params
 
     def __enter__(self):
         torch.cuda.empty_cache()
         log_gpu_memory_usage("Before state_dict() in sharding manager memory", logger=logger)
         if self.offload_param:
             load_fsdp_model_to_gpu(self.module)
-        params = self.module.state_dict()
+        params = self._params_for_rollout(self.module.state_dict())
         log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
         # Copy, not share memory
         # load_format = None if self.full_params else "dtensor"

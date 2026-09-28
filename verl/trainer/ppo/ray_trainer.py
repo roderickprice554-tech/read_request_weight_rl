@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import uuid
+from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 from copy import deepcopy
@@ -553,7 +554,12 @@ class RayPPOTrainer:
             dataset=self.train_dataset,
             batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
             num_workers=2,
-            drop_last=True,
+            drop_last=not (
+                self.config.get("skill_opd", {}).get("enable", False)
+                and self.config.get("skill_opd", {}).get("reflection", {}).get(
+                    "source", "actor"
+                ) == "external"
+            ),
             collate_fn=collate_fn,
             sampler=sampler,
         )
@@ -1085,6 +1091,23 @@ class RayPPOTrainer:
         last_val_metrics = None
 
         for epoch in range(self.config.trainer.total_epochs):
+            external_round = None
+            skill_opd_config = self.config.get("skill_opd", {})
+            reflection_config = skill_opd_config.get("reflection", {})
+            if (
+                skill_opd_config.get("enable", False)
+                and reflection_config.get("source", "actor") == "external"
+            ):
+                from recurrent.opd_round import start_round
+
+                external_round_root = Path(reflection_config["trajectory_path"]).parent
+                external_round = start_round(
+                    external_round_root,
+                    policy_version=epoch,
+                    checkpoint=self.config.actor_rollout_ref.model.path,
+                    expected_task_count=len(self.train_dataset),
+                    trajectories_per_task=self.config.actor_rollout_ref.rollout.n,
+                )
             for batch_dict in self.train_dataloader:
 
                 ############# for 渐进式训练
@@ -1177,8 +1200,10 @@ class RayPPOTrainer:
                                 rollout_batch.non_tensor_batch['uid'] = repeated_group_uids.copy()
                                 rollout_batch.non_tensor_batch['group_uid'] = repeated_group_uids.copy()
                                 rollout_batch.non_tensor_batch['trajectory_uid'] = trajectory_uids.copy()
+                            round_policy_version = epoch
+                            gen_batch.meta_info["policy_version"] = round_policy_version
                             gen_batch_output, final_mask, sample_index = self.generation_manager.run_llm_loop(
-                                gen_batch, timing_raw, policy_version=self.global_steps
+                                gen_batch, timing_raw, policy_version=round_policy_version
                             )
                             from recurrent.utils import get_cumulative_counts, union_uid_clip_num
                             clip_num = get_cumulative_counts(sample_index)
@@ -1825,9 +1850,34 @@ class RayPPOTrainer:
                 logger.log(data=metrics, step=self.global_steps)
 
                 if is_last_step:
+                    if external_round is not None:
+                        from recurrent.opd_round import wait_for_complete_manifest
+
+                        wait_for_complete_manifest(
+                            external_round_root,
+                            external_round,
+                            poll_interval_seconds=reflection_config.get(
+                                "poll_interval_seconds", 1.0
+                            ),
+                            timeout_seconds=reflection_config.get(
+                                "timeout_seconds", None
+                            ),
+                        )
                     pprint(f"Final validation metrics: {last_val_metrics}")
                     progress_bar.close()
                     return
 
                 progress_bar.update(1)
                 self.global_steps += 1
+
+            if external_round is not None:
+                from recurrent.opd_round import wait_for_complete_manifest
+
+                wait_for_complete_manifest(
+                    external_round_root,
+                    external_round,
+                    poll_interval_seconds=reflection_config.get(
+                        "poll_interval_seconds", 1.0
+                    ),
+                    timeout_seconds=reflection_config.get("timeout_seconds", None),
+                )

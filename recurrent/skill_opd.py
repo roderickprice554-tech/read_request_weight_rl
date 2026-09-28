@@ -61,7 +61,7 @@ class ReflectionTrajectory:
             ],
             "query": self.query_text,
             "prediction": self.prediction_text,
-            "is_correct": self.is_correct,
+            "final_reward": 1.0 if self.is_correct else 0.0,
         }
 
 
