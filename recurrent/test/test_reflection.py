@@ -78,6 +78,20 @@ def test_key_frames_are_retained_and_must_stay_inside_transition():
     assert result.reflection_valid is True
     assert result.key_transitions[0].key_frames == (1, 7)
 
+    transition["key_frames"] = []
+    result = parse_and_validate_reflection(
+        _valid_apply(key_transitions=[transition]), _trajectory(), policy_version=9
+    )
+    assert result.reflection_valid is False
+    assert "1 to 3" in result.rejection_reason
+
+    transition["key_frames"] = [0, 1, 2, 3]
+    result = parse_and_validate_reflection(
+        _valid_apply(key_transitions=[transition]), _trajectory(), policy_version=9
+    )
+    assert result.reflection_valid is False
+    assert "1 to 3" in result.rejection_reason
+
     transition["key_frames"] = [8]
     result = parse_and_validate_reflection(
         _valid_apply(key_transitions=[transition]), _trajectory(), policy_version=9

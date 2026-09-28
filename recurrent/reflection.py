@@ -143,7 +143,7 @@ For apply_opd=true use exactly: apply_opd, episode_skill, key_transitions.
 Each key transition uses exactly: transition_index, kind, memory_attribute, step_skill, key_frames.
 kind must be preserve or correct.
 memory_attribute must be one of: entity_identity, state_change, temporal_order, event_existence, count, spatial_relation, visible_text, compression.
-memory_attribute is the error type. key_frames is a non-empty list of source frame indices inside that transition's pre-question boundary.
+memory_attribute is the error type. key_frames contains 1 to 3 source frame indices inside that transition's pre-question boundary.
 For apply_opd=false set episode_skill=null and key_transitions=[] and include skip_reason.
 skip_reason must be one of: memory_cause_uncertain, answer_only_error, insufficient_evidence, invalid_trajectory.
 Valid apply JSON shape:
@@ -248,10 +248,10 @@ def parse_and_validate_reflection(
         )
         boundary = transition.current_chunk_boundary
         raw_key_frames = item["key_frames"]
-        if not isinstance(raw_key_frames, list) or not raw_key_frames or any(
+        if not isinstance(raw_key_frames, list) or not 1 <= len(raw_key_frames) <= 3 or any(
             type(frame) is not int for frame in raw_key_frames
         ):
-            return _invalid(trajectory, policy_version, "key_frames must be non-empty integers")
+            return _invalid(trajectory, policy_version, "key_frames must contain 1 to 3 integers")
         if isinstance(boundary, dict) and "frames" in boundary:
             start, end = boundary["frames"]
             if any(frame < start or frame >= end for frame in raw_key_frames):

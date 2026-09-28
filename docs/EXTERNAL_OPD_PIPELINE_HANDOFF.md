@@ -78,7 +78,7 @@ therefore 128 trajectories. The final batch of a round may contain fewer than
   (`policy_version`, `trajectory_uid`). A valid record contains a global
   `episode_skill` and transition-aligned `step_skill` entries. Each transition
   also identifies its correction/preservation kind, memory error attribute,
-  and evidence/key-frame locations. A skipped reflection records an explicit
+  and one to three evidence/key-frame locations. A skipped reflection records an explicit
   reason.
 - End-of-round output: atomically written `round_manifest.json` containing the
   policy version, frozen checkpoint, expected task count, eight trajectories
