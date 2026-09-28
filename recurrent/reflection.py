@@ -223,12 +223,12 @@ def parse_and_validate_reflection(
     seen_indices = set()
     for item in raw_transitions:
         required_transition_fields = {
-            "transition_index", "kind", "memory_attribute", "step_skill"
+            "transition_index", "kind", "memory_attribute", "step_skill", "key_frames"
         }
         if (
             not isinstance(item, dict)
             or not required_transition_fields <= set(item)
-            or not set(item) - required_transition_fields <= {"key_frames"}
+            or set(item) != required_transition_fields
         ):
             return _invalid(trajectory, policy_version, "key transition fields are invalid")
         transition_index = item["transition_index"]
@@ -247,12 +247,12 @@ def parse_and_validate_reflection(
             if value.transition_index == transition_index
         )
         boundary = transition.current_chunk_boundary
-        raw_key_frames = item.get("key_frames", [])
-        if not isinstance(raw_key_frames, list) or any(
+        raw_key_frames = item["key_frames"]
+        if not isinstance(raw_key_frames, list) or not raw_key_frames or any(
             type(frame) is not int for frame in raw_key_frames
         ):
-            return _invalid(trajectory, policy_version, "key_frames must contain integers")
-        if raw_key_frames and isinstance(boundary, dict) and "frames" in boundary:
+            return _invalid(trajectory, policy_version, "key_frames must be non-empty integers")
+        if isinstance(boundary, dict) and "frames" in boundary:
             start, end = boundary["frames"]
             if any(frame < start or frame >= end for frame in raw_key_frames):
                 return _invalid(trajectory, policy_version, "key_frame outside transition")

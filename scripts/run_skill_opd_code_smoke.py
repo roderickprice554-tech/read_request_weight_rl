@@ -32,6 +32,7 @@ REFLECTION_TEXT = json.dumps(
                 "kind": "preserve",
                 "memory_attribute": "entity_identity",
                 "step_skill": "Preserve entity identity while adding newly observed motion.",
+                "key_frames": [0],
             }
         ],
     },

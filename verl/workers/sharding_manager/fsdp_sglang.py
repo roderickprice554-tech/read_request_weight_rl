@@ -98,7 +98,7 @@ class FSDPSGLangShardingManager(BaseShardingManager):
             return params
         if self.frozen_policy_version != self.requested_policy_version:
             self.frozen_params = {
-                key: value.detach().clone() for key, value in params.items()
+                key: value.detach().to("cpu").clone() for key, value in params.items()
             }
             self.frozen_policy_version = self.requested_policy_version
         return self.frozen_params

@@ -164,7 +164,7 @@ class _ReflectionTokenizer:
         return (
             '{"apply_opd":true,"episode_skill":"Track stable identities across views.",'
             '"key_transitions":[{"transition_index":0,"kind":"correct",'
-            '"memory_attribute":"entity_identity","step_skill":"Preserve object identity across cuts."}]}'
+            '"memory_attribute":"entity_identity","step_skill":"Preserve object identity across cuts.","key_frames":[0]}]}'
         )
 
 
@@ -235,7 +235,7 @@ def test_episode_skill_supervises_non_key_memory_rows_but_never_final_row():
     reflection = parse_and_validate_reflection(
         '{"apply_opd":true,"episode_skill":"Track persistent entities.",'
         '"key_transitions":[{"transition_index":1,"kind":"correct",'
-        '"memory_attribute":"temporal_order","step_skill":"Preserve temporal order."}]}',
+        '"memory_attribute":"temporal_order","step_skill":"Preserve temporal order.","key_frames":[0]}]}',
         trajectory,
         policy_version=9,
     )

@@ -170,8 +170,12 @@ class VideoMemoryDataset(RDataset):
             logger.info(f"[Video Curriculum] Step {global_step}: Updating frames {current_in_file} -> {target}")
             self._write_frames(target)
 
-    def _get_cache_key(self, index: int, video_path_info: str) -> bytes:
-        path_hash = hashlib.md5(video_path_info.encode('utf-8')).hexdigest()
+    def _get_cache_key(self, index: int, video_path_info: str, question_timestamp: float) -> bytes:
+        cache_contract = (
+            f"{video_path_info}|question_timestamp={question_timestamp:.6f}|"
+            f"final_chunk_mode={getattr(self.recurrent_config, 'final_chunk_mode', 'raw_video')}|causal-v1"
+        )
+        path_hash = hashlib.md5(cache_contract.encode('utf-8')).hexdigest()
         return f"{index}_{path_hash}".encode('ascii')
 
     def _resolve_video_path(self, video_path: str) -> str:
@@ -189,28 +193,8 @@ class VideoMemoryDataset(RDataset):
         else:
             video_paths_str = str(video_paths_raw)
 
-        if self.prog_video:
-            dynamic_frames = self._read_frames()
-        else:
-            dynamic_frames = self.current_max_frames
-
-        if self.use_cache and self.env:
-            key = self._get_cache_key(item, video_paths_str)
-            try:
-                # Read-only LMDB transaction for fast cache lookup.
-                with self.env.begin(write=False) as txn:
-                    data_bytes = txn.get(key)
-                    if data_bytes:
-                        cached_data = pickle.loads(data_bytes)
-                        cached_data["sample_uuid"] = str(uuid4())
-                        return cached_data
-            except Exception as e:
-                logger.warning(f"LMDB Read Error item {item}: {e}")
-
-        row_dict: dict = copy.deepcopy(self.dataframe[item])
-
-        extra_info = row_dict.get("extra_info", {})
-        question_timestamp = row_dict.pop(
+        extra_info = raw_row.get("extra_info", {})
+        question_timestamp = raw_row.get(
             self.recurrent_config.question_timestamp_key,
             extra_info.get(self.recurrent_config.question_timestamp_key),
         )
@@ -224,6 +208,31 @@ class VideoMemoryDataset(RDataset):
             raise ValueError(
                 "question_timestamp must be positive and no later than video duration"
             )
+
+        if self.prog_video:
+            dynamic_frames = self._read_frames()
+        else:
+            dynamic_frames = self.current_max_frames
+
+        if self.use_cache and self.env:
+            key = self._get_cache_key(item, video_paths_str, question_timestamp)
+            try:
+                # Read-only LMDB transaction for fast cache lookup.
+                with self.env.begin(write=False) as txn:
+                    data_bytes = txn.get(key)
+                    if data_bytes:
+                        cached_data = pickle.loads(data_bytes)
+                        cached_data["sample_uuid"] = str(uuid4())
+                        return cached_data
+            except Exception as e:
+                logger.warning(f"LMDB Read Error item {item}: {e}")
+
+        row_dict: dict = copy.deepcopy(self.dataframe[item])
+
+        row_dict.pop(
+            self.recurrent_config.question_timestamp_key,
+            None,
+        )
 
         chat = row_dict.pop(self.prompt_key)
         question = row_dict.pop('question')

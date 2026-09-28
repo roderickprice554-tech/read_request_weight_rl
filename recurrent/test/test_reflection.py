@@ -45,6 +45,7 @@ def _valid_apply(**overrides):
                 "kind": "correct",
                 "memory_attribute": "entity_identity",
                 "step_skill": "Keep the same object's identity across camera cuts.",
+                "key_frames": [1],
             }
         ],
     }
@@ -107,12 +108,12 @@ def test_valid_skip_payload():
         ("```json\n" + _valid_apply() + "\n```", "json"),
         (_valid_apply() + " trailing", "trailing"),
         (_valid_apply(extra=True), "fields"),
-        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "revise", "memory_attribute": "entity_identity", "step_skill": "Keep identities stable."}]), "kind"),
-        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "correct", "memory_attribute": "unknown", "step_skill": "Keep identities stable."}]), "memory_attribute"),
+        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "revise", "memory_attribute": "entity_identity", "step_skill": "Keep identities stable.", "key_frames": [1]}]), "kind"),
+        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "correct", "memory_attribute": "unknown", "step_skill": "Keep identities stable.", "key_frames": [1]}]), "memory_attribute"),
         (json.dumps({"apply_opd": False, "episode_skill": "not null", "key_transitions": [], "skip_reason": "answer_only_error"}), "conditional"),
         (_valid_apply(key_transitions=[]), "conditional"),
-        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "correct", "memory_attribute": "entity_identity", "step_skill": "Stable identity."}, {"transition_index": 0, "kind": "preserve", "memory_attribute": "compression", "step_skill": "Compress facts."}]), "duplicate"),
-        (_valid_apply(key_transitions=[{"transition_index": 1, "kind": "correct", "memory_attribute": "entity_identity", "step_skill": "Stable identity."}]), "transition_index"),
+        (_valid_apply(key_transitions=[{"transition_index": 0, "kind": "correct", "memory_attribute": "entity_identity", "step_skill": "Stable identity.", "key_frames": [1]}, {"transition_index": 0, "kind": "preserve", "memory_attribute": "compression", "step_skill": "Compress facts.", "key_frames": [2]}]), "duplicate"),
+        (_valid_apply(key_transitions=[{"transition_index": 1, "kind": "correct", "memory_attribute": "entity_identity", "step_skill": "Stable identity.", "key_frames": [1]}]), "transition_index"),
     ],
 )
 def test_hard_schema_rejections(text, reason):
