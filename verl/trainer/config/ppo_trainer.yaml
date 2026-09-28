@@ -268,6 +268,10 @@ recurrent:
       max_video_clips: 8
       max_final_response_length: 1000
       prompt_type: "type1"
+      question_timestamp_key: question_timestamp
+      # raw_video: answer from n-1 memories plus the last pre-question chunk.
+      # memory_only: summarize the last pre-question chunk before answering from memory.
+      final_chunk_mode: "raw_video"
   tool_gsm8k:
     async_path: "recurrent/impls/async_tool_gsm8k.py"
     async_name: REGISTER
@@ -285,6 +289,9 @@ skill_opd:
   reflection:
     source: actor
     external_path: null
+    trajectory_path: null
+    poll_interval_seconds: 1.0
+    timeout_seconds: null
     temperature: 0
     top_p: 1.0
     max_tokens: 256

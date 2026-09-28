@@ -39,10 +39,16 @@ class ReflectionTrajectory:
         """Construct the analyzer payload from an explicit non-label allowlist."""
         if type(self.is_correct) is not bool:
             raise TypeError("Analyzer requires boolean correctness")
+        observed_video = self.observed_video
+        if isinstance(observed_video, dict) and "source_paths" in observed_video:
+            observed_video = {
+                "source_paths": list(observed_video["source_paths"]),
+                "question_timestamp": float(observed_video["question_timestamp"]),
+            }
         return {
             "trajectory_uid": self.trajectory_uid,
             "policy_version": self.policy_version,
-            "observed_video": self.observed_video,
+            "observed_video": observed_video,
             "transitions": [
                 {
                     "transition_index": transition.transition_index,

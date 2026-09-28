@@ -256,11 +256,12 @@ def create_position_ids_vl(attention_mask: torch.Tensor, processor, vid_inputs, 
         
         # 2) Build 3D RoPE (3, Seq_Len).
         # get_rope_index typically handles video/image-specific logic.
+        video_input = vid_inputs[idx] or {}
         vid_pos_id = get_rope_index(
             processor=processor,
             input_ids=item,
-            video_grid_thw=vid_inputs[idx].get("video_grid_thw", None), # Use .get for safer optional access.
-            second_per_grid_ts=vid_inputs[idx].get("second_per_grid_ts", None),
+            video_grid_thw=video_input.get("video_grid_thw", None),
+            second_per_grid_ts=video_input.get("second_per_grid_ts", None),
             attention_mask=cur_mask, 
         )
         

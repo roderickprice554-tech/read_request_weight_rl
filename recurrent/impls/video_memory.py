@@ -35,6 +35,12 @@ class VideoMemoryConfig(RConfig):
     prompt_type: str
     max_video_frame: int
     video_root: Optional[str] = None
+    question_timestamp_key: str = "question_timestamp"
+    final_chunk_mode: str = "raw_video"
+
+    def __post_init__(self):
+        if self.final_chunk_mode not in {"raw_video", "memory_only"}:
+            raise ValueError("final_chunk_mode must be raw_video or memory_only")
 
     @property
     def max_raw_input_length(self):
@@ -74,6 +80,7 @@ class VideoMemoryDataset(RDataset):
 
         self.prog_video = prog_video
         self.use_cache = use_cache
+        self.recurrent_config = recurrent_config
         self.video_root = recurrent_config.video_root
         self.video_cache_dir = "/mnt/verl_lmdb_cache" 
         self.env = None
@@ -200,7 +207,23 @@ class VideoMemoryDataset(RDataset):
             except Exception as e:
                 logger.warning(f"LMDB Read Error item {item}: {e}")
 
-        row_dict: dict = copy.deepcopy(self.dataframe[item]) 
+        row_dict: dict = copy.deepcopy(self.dataframe[item])
+
+        extra_info = row_dict.get("extra_info", {})
+        question_timestamp = row_dict.pop(
+            self.recurrent_config.question_timestamp_key,
+            extra_info.get(self.recurrent_config.question_timestamp_key),
+        )
+        if question_timestamp is None:
+            raise ValueError(
+                f"missing required {self.recurrent_config.question_timestamp_key!r}"
+            )
+        question_timestamp = float(question_timestamp)
+        source_duration = float(extra_info.get("duration", question_timestamp))
+        if not 0.0 < question_timestamp <= source_duration:
+            raise ValueError(
+                "question_timestamp must be positive and no later than video duration"
+            )
 
         chat = row_dict.pop(self.prompt_key)
         question = row_dict.pop('question')
@@ -213,10 +236,16 @@ class VideoMemoryDataset(RDataset):
                 video_paths = [video_paths]
             
             processed_video_list = []
+            resolved_video_paths = []
             for video_path in video_paths:
                 video_path = self._resolve_video_path(video_path)
+                resolved_video_paths.append(video_path)
                 video_tensor = process_video(
-                    {"video": video_path}, 
+                    {
+                        "video": video_path,
+                        "video_start": 0.0,
+                        "video_end": question_timestamp,
+                    },
                     fps=2, 
                     fps_max_frames=dynamic_frames, 
                     max_pixels=160 * 28 * 28
@@ -228,6 +257,8 @@ class VideoMemoryDataset(RDataset):
                 processed_video_list.append(video_array)
 
             multi_modal_data["video"] = processed_video_list
+            multi_modal_data["source_paths"] = resolved_video_paths
+            multi_modal_data["question_timestamp"] = question_timestamp
             
         t, _, h, w = multi_modal_data["video"][0].shape
         context_len = int((t + 1) // 2 * h // 28 * w // 28)
@@ -256,8 +287,8 @@ class VideoMemoryDataset(RDataset):
             'second_per_grid_ts': [1.0]
         }
 
-        extra_info = row_dict.get("extra_info", {})
-        row_dict["video_duration"] = extra_info.get('duration', 0.0)
+        row_dict["video_duration"] = question_timestamp
+        row_dict["question_timestamp"] = question_timestamp
         row_dict["index"] = extra_info.get("index", 0)
         row_dict["sample_uuid"] = str(uuid4())
 
@@ -310,6 +341,11 @@ TEMPLATE_FINAL_BOXED_TYPE_2 = """{TimeStamp} {VideoClip}
 
 Your answer:
 """
+TEMPLATE_FINAL_MEMORY_ONLY = """{EndTime} Based on the complete Video Memory, answer the following Problem.
+{PromptFinal}
+Output the final answer in \\boxed{{}}.
+Your answer:
+"""
 
 MEMORY_PROMPT = """[System]
 You are a Streaming Video Analyst.
@@ -335,6 +371,10 @@ class VideoMemoryAgent(RAgent):
         elif self.config.prompt_type == "type2":
             self.token_message_template = TokenTemplate(self.chat_template.format(message=TEMPLATE_TYPE_2,previous=MEMORY_PROMPT), tokenizer)
             self.token_final_message_template = TokenTemplate(self.chat_template.format(message=TEMPLATE_FINAL_BOXED_TYPE_2,previous=MEMORY_PROMPT), tokenizer)
+        self.token_final_memory_only_template = TokenTemplate(
+            self.chat_template.format(message=TEMPLATE_FINAL_MEMORY_ONLY, previous=MEMORY_PROMPT),
+            tokenizer,
+        )
         
         self.max_input_length = self.config.max_raw_input_length + max(self.token_message_template.length, self.token_final_message_template.length)
         logger.info(f'\n[RECURRENT] max_input_length: {self.config.max_raw_input_length}(raw) '
@@ -374,7 +414,10 @@ class VideoMemoryAgent(RAgent):
     def action(self) -> Tuple[List[torch.Tensor], dict]:
         # 1) Determine current state.
         # active_mask checks if we still have video clips to process
-        active_mask = self.ctx_length > (self.step + 1) * self.config.video_clip_token_size
+        if self.config.final_chunk_mode == "memory_only":
+            active_mask = self.ctx_length > self.step * self.config.video_clip_token_size
+        else:
+            active_mask = self.ctx_length > (self.step + 1) * self.config.video_clip_token_size
         self.active_mask = active_mask
         
         # Decide whether to enter final turn.
@@ -386,8 +429,12 @@ class VideoMemoryAgent(RAgent):
             # Final mode: process all samples with the final template.
             calc_step = self.step
             target_indices = list(range(self.bsz))
-            template = self.token_final_message_template
-        else:
+            template = (
+                self.token_final_memory_only_template
+                if self.config.final_chunk_mode == "memory_only"
+                else self.token_final_message_template
+            )
+        elif self.config.final_chunk_mode == "raw_video":
             # Normal mode: process only active samples with the standard template.
             calc_step = self.step
             target_indices = torch.nonzero(active_mask).squeeze(1).tolist()
@@ -438,24 +485,31 @@ class VideoMemoryAgent(RAgent):
 
         for idx in tqdm(target_indices):
             # A) Slice current video segment.
-            s_idx, e_idx = start_frame_idx[idx].item(), end_frame_idx[idx].item()
+            memory_only_answer = is_final_turn and self.config.final_chunk_mode == "memory_only"
+            if memory_only_answer:
+                s_idx = e_idx = int(self.num_frames[idx].item())
+            else:
+                s_idx = max(0, start_frame_idx[idx].item())
+                e_idx = min(int(self.num_frames[idx].item()), end_frame_idx[idx].item())
 
             raw_msg = batch_data['multi_modal_inputs'][idx]
             self.batch_uids.append(batch_data['uid'][idx])
-            s_id = self.tokens_per_frame[idx] * 2 * s_idx 
-            e_id = self.tokens_per_frame[idx] * 2 * e_idx
-            vgw = raw_msg['video_grid_thw'].clone()
-            vgw[0,0] = int((e_idx - s_idx)/2)
-            vid_message = {
-                'video_grid_thw':vgw,
-                'second_per_grid_ts':raw_msg['second_per_grid_ts'],
-            }
-            self.video_inputs.append(vid_message)
+            if memory_only_answer:
+                self.video_inputs.append(None)
+                self.video_messages.append(None)
+            else:
+                vgw = raw_msg['video_grid_thw'].clone()
+                vgw[0,0] = int((e_idx - s_idx)/2)
+                vid_message = {
+                    'video_grid_thw':vgw,
+                    'second_per_grid_ts':raw_msg['second_per_grid_ts'],
+                }
+                self.video_inputs.append(vid_message)
 
-            video_clip = mm_data[idx].copy()
-            video_clip['video'] = list(mm_data[idx]['video']) 
-            video_clip['video'][0] = video_clip['video'][0][s_idx:e_idx]
-            self.video_messages.append(video_clip)
+                video_clip = mm_data[idx].copy()
+                video_clip['video'] = list(mm_data[idx]['video'])
+                video_clip['video'][0] = video_clip['video'][0][s_idx:e_idx]
+                self.video_messages.append(video_clip)
 
             # B) Compute clip timestamps.
             t_factor = durations[idx] / self.num_frames[idx]
@@ -484,8 +538,9 @@ class VideoMemoryAgent(RAgent):
             fmt_kwargs = {
                 'memory': self.memory[idx] if self.memory[idx] is not None else self.NO_MEMORY_TOKENS,
                 'TimeStamp': ts_tokens,
-                'VideoClip': torch.tensor([151652] + [151656] * vid_pad_num + [151653]),
             }
+            if not memory_only_answer:
+                fmt_kwargs['VideoClip'] = torch.tensor([151652] + [151656] * vid_pad_num + [151653])
 
             # Add final-only fields when in final mode.
             if is_final_turn:

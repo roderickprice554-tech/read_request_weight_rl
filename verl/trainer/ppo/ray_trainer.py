@@ -1315,11 +1315,24 @@ class RayPPOTrainer:
                                     ),
                                 )
                                 if reflection_config.get("source", "actor") == "external":
-                                    from recurrent.external_reflection_store import ExternalReflectionStore
+                                    from recurrent.external_reflection_store import (
+                                        ExternalReflectionStore,
+                                        publish_trajectories,
+                                    )
 
+                                    publish_trajectories(
+                                        reflection_config["trajectory_path"],
+                                        reflection_trajectories,
+                                    )
                                     reflections = ExternalReflectionStore(
-                                        reflection_config["external_path"]
-                                    ).get_many(reflection_trajectories)
+                                        reflection_config["external_path"],
+                                        poll_interval_seconds=reflection_config.get(
+                                            "poll_interval_seconds", 1.0
+                                        ),
+                                        timeout_seconds=reflection_config.get(
+                                            "timeout_seconds", None
+                                        ),
+                                    ).wait_for_many(reflection_trajectories)
                                 else:
                                     reflections = skill_opd_manager.generate_reflections(
                                         reflection_trajectories, self.actor_rollout_wg

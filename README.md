@@ -1,5 +1,8 @@
 # Read → Request → Weight → RL
 
+See `docs/EXTERNAL_OPD_PIPELINE_HANDOFF.md` for the causal video contract,
+required external inputs, round protocol, and per-module inputs/outputs.
+
 This directory is a portable copy of the VST/VERL trainer plus a thin pipeline for:
 
 1. reading previously generated VST trajectories;
