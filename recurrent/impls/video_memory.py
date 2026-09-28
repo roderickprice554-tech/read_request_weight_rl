@@ -435,7 +435,7 @@ class VideoMemoryAgent(RAgent):
                 if final_chunk_mode == "memory_only"
                 else self.token_final_message_template
             )
-        elif final_chunk_mode == "raw_video":
+        else:
             # Normal mode: process only active samples with the standard template.
             calc_step = self.step
             target_indices = torch.nonzero(active_mask).squeeze(1).tolist()
