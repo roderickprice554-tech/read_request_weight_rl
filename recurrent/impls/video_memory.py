@@ -414,7 +414,8 @@ class VideoMemoryAgent(RAgent):
     def action(self) -> Tuple[List[torch.Tensor], dict]:
         # 1) Determine current state.
         # active_mask checks if we still have video clips to process
-        if self.config.final_chunk_mode == "memory_only":
+        final_chunk_mode = getattr(self.config, "final_chunk_mode", "raw_video")
+        if final_chunk_mode == "memory_only":
             active_mask = self.ctx_length > self.step * self.config.video_clip_token_size
         else:
             active_mask = self.ctx_length > (self.step + 1) * self.config.video_clip_token_size
@@ -431,10 +432,10 @@ class VideoMemoryAgent(RAgent):
             target_indices = list(range(self.bsz))
             template = (
                 self.token_final_memory_only_template
-                if self.config.final_chunk_mode == "memory_only"
+                if final_chunk_mode == "memory_only"
                 else self.token_final_message_template
             )
-        elif self.config.final_chunk_mode == "raw_video":
+        elif final_chunk_mode == "raw_video":
             # Normal mode: process only active samples with the standard template.
             calc_step = self.step
             target_indices = torch.nonzero(active_mask).squeeze(1).tolist()
@@ -485,7 +486,7 @@ class VideoMemoryAgent(RAgent):
 
         for idx in tqdm(target_indices):
             # A) Slice current video segment.
-            memory_only_answer = is_final_turn and self.config.final_chunk_mode == "memory_only"
+            memory_only_answer = is_final_turn and final_chunk_mode == "memory_only"
             if memory_only_answer:
                 s_idx = e_idx = int(self.num_frames[idx].item())
             else:
