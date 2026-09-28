@@ -85,10 +85,20 @@ def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTraject
         "prediction",
         "final_reward",
     }
-    _require_exact_fields(record, fields, "offline trajectory")
+    extended_fields = fields | {"is_correct"}
+    if set(record) not in (fields, extended_fields):
+        raise ValueError(
+            f"offline trajectory fields must match exactly: {sorted(fields)} "
+            f"with optional is_correct"
+        )
     reward = float(record["final_reward"])
     if not math.isfinite(reward):
         raise ValueError("final reward must be finite")
+    if "is_correct" in record:
+        if type(record["is_correct"]) is not bool:
+            raise TypeError("is_correct must be boolean")
+        if record["is_correct"] != reward_to_is_correct(reward):
+            raise ValueError("is_correct does not match final_reward")
 
     transition_fields = {
         "transition_index",
