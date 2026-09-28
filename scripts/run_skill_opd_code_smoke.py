@@ -32,7 +32,7 @@ REFLECTION_TEXT = json.dumps(
                 "kind": "preserve",
                 "memory_attribute": "entity_identity",
                 "step_skill": "Preserve entity identity while adding newly observed motion.",
-                "key_frames": [0],
+                "key_frames": [4],
             }
         ],
     },
@@ -118,8 +118,10 @@ def _max_parameter_change(module, before):
 def _run_toy_reflection_sft():
     trajectory = offline_record_to_trajectory(_offline_record())
     request = build_teacher_request(trajectory)
-    if "final_reward" in request.payload or "reward" in request.payload:
-        raise AssertionError("raw reward leaked into the teacher request")
+    if request.payload["final_reward"] != 1.0:
+        raise AssertionError("environment reward missing from the external trajectory")
+    if {"ground_truth", "correct_answer", "answer_key"} & request.payload.keys():
+        raise AssertionError("ground-truth answer leaked into the teacher request")
     accepted = validate_teacher_response(trajectory, REFLECTION_TEXT, source="fixture")
     conversation = to_vst_sft_record(trajectory, accepted)
     if conversation[1]["content"][0]["text"] != REFLECTION_TEXT:
