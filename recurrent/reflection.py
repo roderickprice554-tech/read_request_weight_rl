@@ -33,6 +33,7 @@ class KeyTransition:
     kind: str
     memory_attribute: str
     step_skill: str
+    key_frames: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,13 +140,14 @@ Prediction: {trajectory.prediction_text}
 Prediction correct: {str(trajectory.is_correct).lower()}
 
 For apply_opd=true use exactly: apply_opd, episode_skill, key_transitions.
-Each key transition uses exactly: transition_index, kind, memory_attribute, step_skill.
+Each key transition uses exactly: transition_index, kind, memory_attribute, step_skill, key_frames.
 kind must be preserve or correct.
 memory_attribute must be one of: entity_identity, state_change, temporal_order, event_existence, count, spatial_relation, visible_text, compression.
+memory_attribute is the error type. key_frames is a non-empty list of source frame indices inside that transition's pre-question boundary.
 For apply_opd=false set episode_skill=null and key_transitions=[] and include skip_reason.
 skip_reason must be one of: memory_cause_uncertain, answer_only_error, insufficient_evidence, invalid_trajectory.
 Valid apply JSON shape:
-{{"apply_opd":true,"episode_skill":"query-independent general skill","key_transitions":[{{"transition_index":0,"kind":"preserve","memory_attribute":"compression","step_skill":"query-independent transition skill"}}]}}
+{{"apply_opd":true,"episode_skill":"query-independent general skill","key_transitions":[{{"transition_index":0,"kind":"preserve","memory_attribute":"compression","step_skill":"query-independent transition skill","key_frames":[12]}}]}}
 Valid skip JSON shape:
 {{"apply_opd":false,"episode_skill":null,"key_transitions":[],"skip_reason":"memory_cause_uncertain"}}
 """
@@ -220,9 +222,14 @@ def parse_and_validate_reflection(
     parsed = []
     seen_indices = set()
     for item in raw_transitions:
-        if not isinstance(item, dict) or set(item) != {
+        required_transition_fields = {
             "transition_index", "kind", "memory_attribute", "step_skill"
-        }:
+        }
+        if (
+            not isinstance(item, dict)
+            or not required_transition_fields <= set(item)
+            or not set(item) - required_transition_fields <= {"key_frames"}
+        ):
             return _invalid(trajectory, policy_version, "key transition fields are invalid")
         transition_index = item["transition_index"]
         if type(transition_index) is not int or transition_index not in allowed_indices:
@@ -235,6 +242,20 @@ def parse_and_validate_reflection(
             return _invalid(trajectory, policy_version, "invalid memory_attribute")
         if not isinstance(item["step_skill"], str) or not item["step_skill"].strip():
             return _invalid(trajectory, policy_version, "step_skill must be non-empty")
+        transition = next(
+            value for value in trajectory.transitions
+            if value.transition_index == transition_index
+        )
+        boundary = transition.current_chunk_boundary
+        raw_key_frames = item.get("key_frames", [])
+        if not isinstance(raw_key_frames, list) or any(
+            type(frame) is not int for frame in raw_key_frames
+        ):
+            return _invalid(trajectory, policy_version, "key_frames must contain integers")
+        if raw_key_frames and isinstance(boundary, dict) and "frames" in boundary:
+            start, end = boundary["frames"]
+            if any(frame < start or frame >= end for frame in raw_key_frames):
+                return _invalid(trajectory, policy_version, "key_frame outside transition")
         seen_indices.add(transition_index)
         parsed.append(
             KeyTransition(
@@ -242,6 +263,7 @@ def parse_and_validate_reflection(
                 item["kind"],
                 item["memory_attribute"],
                 item["step_skill"].strip(),
+                tuple(raw_key_frames),
             )
         )
 

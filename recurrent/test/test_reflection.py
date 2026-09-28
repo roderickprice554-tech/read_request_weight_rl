@@ -63,6 +63,28 @@ def test_valid_apply_payload_gets_program_owned_envelope():
     assert result.key_transitions[0].transition_index == 0
 
 
+def test_key_frames_are_retained_and_must_stay_inside_transition():
+    transition = {
+        "transition_index": 0,
+        "kind": "correct",
+        "memory_attribute": "temporal_order",
+        "step_skill": "Preserve event order before compressing memory.",
+        "key_frames": [1, 7],
+    }
+    result = parse_and_validate_reflection(
+        _valid_apply(key_transitions=[transition]), _trajectory(), policy_version=9
+    )
+    assert result.reflection_valid is True
+    assert result.key_transitions[0].key_frames == (1, 7)
+
+    transition["key_frames"] = [8]
+    result = parse_and_validate_reflection(
+        _valid_apply(key_transitions=[transition]), _trajectory(), policy_version=9
+    )
+    assert result.reflection_valid is False
+    assert "outside transition" in result.rejection_reason
+
+
 def test_valid_skip_payload():
     text = json.dumps(
         {

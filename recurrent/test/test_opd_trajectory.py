@@ -181,12 +181,17 @@ class _TinyTokenizer:
         return str(value)
 
 
-def _video_agent_for_action(step, guarded):
+def _video_agent_for_action(step, guarded, final_chunk_mode="raw_video"):
     agent = VideoMemoryAgent.__new__(VideoMemoryAgent)
-    agent.config = SimpleNamespace(video_clip_token_size=2, gen_pad_to=4)
+    agent.config = SimpleNamespace(
+        video_clip_token_size=2,
+        gen_pad_to=4,
+        final_chunk_mode=final_chunk_mode,
+    )
     agent.tokenizer = _TinyTokenizer()
     agent.token_message_template = _CaptureTemplate()
     agent.token_final_message_template = _CaptureTemplate()
+    agent.token_final_memory_only_template = _CaptureTemplate()
     agent.max_input_length = 32
     agent.NO_MEMORY_TOKENS = []
     agent.ctx_length = torch.tensor([6])
@@ -249,6 +254,26 @@ def test_final_action_includes_memory_final_chunk_and_prompt():
     assert messages[0]["memory"] == [91]
     assert list(messages[0]["PromptFinal"]) == [71, 72]
     assert video_messages[0]["video"][0].shape[0] == 4
+
+
+def test_memory_only_mode_summarizes_last_chunk_then_answers_without_video():
+    last_chunk = _video_agent_for_action(
+        step=2, guarded=True, final_chunk_mode="memory_only"
+    )
+    messages, video_messages, _, _, _ = last_chunk.action()
+    assert last_chunk.is_final is False
+    assert "PromptFinal" not in messages[0]
+    assert video_messages[0]["video"][0].shape[0] == 4
+
+    answer = _video_agent_for_action(
+        step=3, guarded=False, final_chunk_mode="memory_only"
+    )
+    messages, video_messages, _, video_inputs, _ = answer.action()
+    assert answer.is_final is True
+    assert list(messages[0]["PromptFinal"]) == [71, 72]
+    assert "VideoClip" not in messages[0]
+    assert video_messages[0] is None
+    assert video_inputs[0] is None
 
 
 def _generation_output(response_token):
