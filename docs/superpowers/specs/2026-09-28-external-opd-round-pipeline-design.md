@@ -110,17 +110,39 @@ synchronizes the rollout worker for the next round.
 ## OPD Advantage
 
 GRPO computes the trajectory-level group advantage `A_i` across the eight
-samples of one task. OPD computes a detached bounded token weight `w_i^t` from
-the existing student and hindsight-conditioned teacher log probabilities.
-The effective token advantage is:
+samples of one task. For the same sampled response token `R_i^t`, OPD first
+compares its log probability with and without the hindsight skill `C_i`:
 
 ```text
+delta_i^t = log pi_theta(R_i^t | x, C_i, R_i^<t)
+            - log pi_theta(R_i^t | x, R_i^<t)
+```
+
+The delta is detached from gradient computation, aligned with the sign of the
+trajectory advantage, and clipped:
+
+```text
+aligned_delta_i^t = clip(
+    sign(A_i) * delta_i^t,
+    log(1 - epsilon_R),
+    log(1 + epsilon_R),
+)
+```
+
+The bounded OPD weight and effective token advantage are:
+
+```text
+w_i^t = 1 + lambda_R * (exp(aligned_delta_i^t) - 1)
 A_i^t = A_i * w_i^t
 ```
 
-The existing PPO/GRPO loss consumes `A_i^t`. OPD is not added as a separate
-loss term. Existing response masks continue to exclude non-action tokens and
-final-answer exclusions remain unchanged.
+The clipping bounds imply
+`w_i^t in [1 - lambda_R * epsilon_R, 1 + lambda_R * epsilon_R]`. With the
+configured `epsilon_R=0.2` and `lambda_R=0.5`, weights stay in `[0.9, 1.1]`.
+OPD therefore controls the strength of the RL signal without changing its
+positive or negative direction. The existing PPO/GRPO loss consumes `A_i^t`.
+OPD is not added as a separate loss term. Existing response masks continue to
+exclude non-action tokens and final-answer exclusions remain unchanged.
 
 ## Failure and Restart Behavior
 
@@ -166,6 +188,9 @@ Tests will cover:
 - restart behavior that does not consume a trajectory twice;
 - command/config defaults for 16 tasks, eight trajectories, temperature 1.0,
   and top-p 0.98;
+- the token log-probability delta uses hindsight-conditioned minus original
+  conditioning for the same sampled token;
+- sign alignment and logarithmic clipping preserve the sign of `A_i`;
 - token advantage remains `A_i * w_i^t` in the existing OPD loss path.
 
 GPU integration verification will confirm that rollout-worker weights remain
