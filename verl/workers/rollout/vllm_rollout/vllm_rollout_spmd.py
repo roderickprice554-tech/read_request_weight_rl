@@ -52,6 +52,37 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 import time
 import datetime 
+
+
+class VisionEncoderCounter:
+    """Opt-in counter for the vLLM model's real video-encoding boundary."""
+
+    def __init__(self):
+        self._active_keys = []
+        self._counts = {}
+
+    def begin(self, group_uids, chunk_identity, request_count):
+        unique_groups = list(dict.fromkeys(str(uid) for uid in group_uids))
+        self._active_keys = [f"{uid}|{chunk_identity}" for uid in unique_groups]
+        if len(self._active_keys) == 1:
+            counts = self._counts.setdefault(self._active_keys[0], {
+                "request_count": 0,
+                "vision_forward_count": 0,
+                "vision_item_count": 0,
+            })
+            counts["request_count"] += int(request_count)
+
+    def record_forward(self, encoded_items):
+        if len(self._active_keys) != 1:
+            return
+        counts = self._counts[self._active_keys[0]]
+        counts["vision_forward_count"] += 1
+        counts["vision_item_count"] += int(encoded_items)
+
+    def snapshot(self):
+        return {key: dict(value) for key, value in self._counts.items()}
+
+
 def _now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 # TODO
@@ -173,6 +204,21 @@ class vLLMRollout(BaseRollout):
         """
         super().__init__()
         self.config = config
+        self.vision_encoder_counter = VisionEncoderCounter()
+        self._vision_chunk_index = 0
+
+        if config.get("vision_encoder_diagnostics", False):
+            from vllm.model_executor.models.qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+
+            original_process_video = Qwen2_5_VLForConditionalGeneration._process_video_input
+            counter = self.vision_encoder_counter
+
+            def counted_process_video(model, video_input):
+                if video_input.get("type") != "video_embeds":
+                    counter.record_forward(len(video_input["video_grid_thw"]))
+                return original_process_video(model, video_input)
+
+            Qwen2_5_VLForConditionalGeneration._process_video_input = counted_process_video
 
         self.if_embed_cache = False
         if if_embed_cache:
@@ -342,15 +388,20 @@ class vLLMRollout(BaseRollout):
                         _device = self.model_vision_encoder.device
                         _dtype = multi_modal_data["video"][0].dtype
                         if _uid in tmp_embed_cache:
-                            batch_multi_modal_embeds.append({"video": tmp_embed_cache[_uid]})
+                            batch_multi_modal_embeds.append(tmp_embed_cache[_uid])
                         else:
                             raw_outputs = self.processor(text=["<|video_pad|>"], videos=multi_modal_data["video"][0], return_tensors="pt")
                             pixel_values_video = raw_outputs["pixel_values_videos"].type(self.model_vision_encoder.dtype).to(_device)     
                             grid_thw = raw_outputs["video_grid_thw"].to(_device)
                             with torch.no_grad():
                                 visual_embed = self.model_vision_encoder(pixel_values_video, grid_thw=grid_thw).to(torch.bfloat16).cpu()
-                            tmp_embed_cache[_uid] = visual_embed
-                            batch_multi_modal_embeds.append({"video": visual_embed})
+                            cached_visual = {
+                                "video": visual_embed,
+                                "video_grid_thw": raw_outputs["video_grid_thw"].cpu(),
+                                "second_per_grid_ts": raw_outputs.get("second_per_grid_ts", [1.0]),
+                            }
+                            tmp_embed_cache[_uid] = cached_visual
+                            batch_multi_modal_embeds.append(cached_visual)
                     else:
                         batch_multi_modal_embeds.append({"video": None})
 
@@ -400,6 +451,13 @@ class vLLMRollout(BaseRollout):
             if torch.distributed.get_rank() == 0:
                 print(f"prepare time: {prepared_time - start_time}")
             
+            if self.config.get("vision_encoder_diagnostics", False):
+                self.vision_encoder_counter.begin(
+                    uid,
+                    f"chunk-{self._vision_chunk_index}",
+                    request_count=len(uid),
+                )
+                self._vision_chunk_index += 1
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
@@ -496,7 +554,10 @@ class vLLMRollout(BaseRollout):
         ):
             self.inference_engine.free_cache_engine()
 
-        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+        result = DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
+        if self.config.get("vision_encoder_diagnostics", False):
+            result.meta_info["vision_encoder_counts"] = self.vision_encoder_counter.snapshot()
+        return result
 
 
 class vLLMAsyncRollout:
