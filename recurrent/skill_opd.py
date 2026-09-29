@@ -76,6 +76,42 @@ def group_reflection_trajectories(trajectories):
     return result
 
 
+def select_valid_teacher_rows(data: DataProto):
+    """Return rows containing OPD supervision, preserving all row-aligned fields."""
+    valid_rows = data.batch["opd_valid_token_mask"].bool().any(dim=-1)
+    if not valid_rows.any():
+        return None, valid_rows
+    from recurrent.utils import indexing_proto
+
+    return indexing_proto(data, valid_rows), valid_rows
+
+
+def scatter_teacher_cache(sparse_cache: DataProto | None, rollout: DataProto) -> DataProto:
+    """Restore sparse teacher scores to rollout row order with zeros elsewhere."""
+    valid_rows = rollout.batch["opd_valid_token_mask"].bool().any(dim=-1)
+    shape = rollout.batch["responses"].shape
+    if sparse_cache is None:
+        dtype = torch.bfloat16
+        device = rollout.batch["responses"].device
+    else:
+        sparse_log_probs = sparse_cache.batch["opd_teacher_log_probs"]
+        dtype = sparse_log_probs.dtype
+        device = sparse_log_probs.device
+    log_probs = torch.zeros(shape, dtype=dtype, device=device)
+    if sparse_cache is not None:
+        log_probs[valid_rows.to(device)] = sparse_log_probs
+    return DataProto.from_dict(
+        tensors={
+            "opd_teacher_log_probs": log_probs.detach(),
+            "opd_valid_token_mask": rollout.batch["opd_valid_token_mask"].detach(),
+        },
+        non_tensors={
+            key: rollout.non_tensor_batch[key]
+            for key in ("trajectory_uid", "policy_version", "transition_index")
+        },
+    )
+
+
 def reward_to_is_correct(reward: float) -> bool:
     value = float(reward)
     if not math.isfinite(value):

@@ -261,9 +261,14 @@ class DataParallelPPOActor(BasePPOActor):
                 **data.non_tensor_batch,
             }
             with torch.no_grad():
-                _, log_probs = self._forward_micro_batch(
-                    model_data, temperature=1.0, calculate_entropy=False
-                )
+                if "multi_modal_embeds" in model_data:
+                    _, log_probs = self._forward_micro_batch_embed(
+                        model_data, temperature=1.0, calculate_entropy=False
+                    )
+                else:
+                    _, log_probs = self._forward_micro_batch(
+                        model_data, temperature=1.0, calculate_entropy=False
+                    )
         finally:
             self.actor_module.train(was_training)
         return {

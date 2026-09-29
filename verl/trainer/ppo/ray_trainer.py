@@ -1380,45 +1380,64 @@ class RayPPOTrainer:
                             if skill_opd_config.get("enable", False):
                                 from recurrent.skill_opd import (
                                     augment_teacher_inputs,
+                                    scatter_teacher_cache,
+                                    select_valid_teacher_rows,
                                     validate_opd_teacher_cache,
                                 )
                                 from recurrent.utils import create_position_ids_vl
 
-                                teacher_skills = np.empty(len(batch), dtype=object)
-                                teacher_skills[:] = None
-                                for row, (episode_skill, step_skill) in enumerate(
-                                    zip(
-                                        batch.non_tensor_batch["opd_episode_skill"],
-                                        batch.non_tensor_batch["opd_step_skill"],
-                                    )
-                                ):
-                                    if episode_skill is not None:
+                                teacher_batch, valid_teacher_rows = select_valid_teacher_rows(batch)
+                                metrics["skill_opd/teacher_valid_row_count"] = int(
+                                    valid_teacher_rows.sum().item()
+                                )
+                                metrics["skill_opd/teacher_skipped_row_count"] = int(
+                                    (~valid_teacher_rows).sum().item()
+                                )
+                                if teacher_batch is None:
+                                    teacher_cache = scatter_teacher_cache(None, batch)
+                                else:
+                                    teacher_skills = np.empty(len(teacher_batch), dtype=object)
+                                    teacher_skills[:] = None
+                                    for row, (episode_skill, step_skill) in enumerate(
+                                        zip(
+                                            teacher_batch.non_tensor_batch["opd_episode_skill"],
+                                            teacher_batch.non_tensor_batch["opd_step_skill"],
+                                        )
+                                    ):
                                         text = f"Episode skill: {episode_skill}"
                                         if step_skill is not None:
                                             text += f"\nStep skill: {step_skill}"
                                         teacher_skills[row] = text
-                                teacher_batch = deepcopy(batch)
-                                teacher_input_ids, teacher_attention_mask = augment_teacher_inputs(
-                                    teacher_batch.batch["input_ids"],
-                                    teacher_batch.batch["attention_mask"],
-                                    teacher_batch.batch["responses"],
-                                    teacher_skills,
-                                    self.tokenizer,
-                                    max_context_tokens=reflection_config.get(
-                                        "max_context_tokens", 32768
-                                    ),
-                                )
-                                teacher_batch.batch["input_ids"] = teacher_input_ids
-                                teacher_batch.batch["attention_mask"] = teacher_attention_mask
-                                teacher_batch.batch["position_ids"] = create_position_ids_vl(
-                                    teacher_attention_mask,
-                                    self.processor,
-                                    teacher_batch.non_tensor_batch["multi_modal_inputs"],
-                                    teacher_input_ids,
-                                )
-                                teacher_cache = self.actor_rollout_wg.compute_opd_teacher_cache(
-                                    teacher_batch
-                                )
+                                    teacher_input_ids, teacher_attention_mask = augment_teacher_inputs(
+                                        teacher_batch.batch["input_ids"],
+                                        teacher_batch.batch["attention_mask"],
+                                        teacher_batch.batch["responses"],
+                                        teacher_skills,
+                                        self.tokenizer,
+                                        max_context_tokens=reflection_config.get(
+                                            "max_context_tokens", 32768
+                                        ),
+                                    )
+                                    teacher_batch.batch["input_ids"] = teacher_input_ids
+                                    teacher_batch.batch["attention_mask"] = teacher_attention_mask
+                                    position_inputs = teacher_batch.non_tensor_batch.get(
+                                        "multi_modal_inputs",
+                                        teacher_batch.non_tensor_batch.get("multi_modal_embeds"),
+                                    )
+                                    teacher_batch.batch["position_ids"] = create_position_ids_vl(
+                                        teacher_attention_mask,
+                                        self.processor,
+                                        position_inputs,
+                                        teacher_input_ids,
+                                    )
+                                    sparse_batch, sparse_pad_size = pad_dataproto_to_divisor(
+                                        teacher_batch, self.actor_rollout_wg.world_size
+                                    )
+                                    sparse_cache = self.actor_rollout_wg.compute_opd_teacher_cache(
+                                        sparse_batch
+                                    )
+                                    sparse_cache = unpad_dataproto(sparse_cache, sparse_pad_size)
+                                    teacher_cache = scatter_teacher_cache(sparse_cache, batch)
                                 validate_opd_teacher_cache(batch, teacher_cache)
                                 metrics["skill_opd/teacher_detached"] = True
                                 cache_bytes = sum(
