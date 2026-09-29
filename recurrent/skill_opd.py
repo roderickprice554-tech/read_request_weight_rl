@@ -59,6 +59,23 @@ class ReflectionTrajectory:
         }
 
 
+def group_reflection_trajectories(trajectories):
+    """Group trajectories by task without changing their input order."""
+    groups = {}
+    for trajectory in trajectories:
+        groups.setdefault(trajectory.group_uid, []).append(trajectory)
+    result = []
+    for group in groups.values():
+        versions = {item.policy_version for item in group}
+        if len(versions) != 1:
+            raise ValueError(f"policy_version mismatch in group_uid {group[0].group_uid!r}")
+        uids = [item.trajectory_uid for item in group]
+        if len(set(uids)) != len(uids):
+            raise ValueError(f"duplicate trajectory_uid in group_uid {group[0].group_uid!r}")
+        result.append(group)
+    return result
+
+
 def reward_to_is_correct(reward: float) -> bool:
     value = float(reward)
     if not math.isfinite(value):
@@ -321,7 +338,7 @@ class SkillOPDManager:
     def _build_reflection_batch(self, trajectories):
         if self.processor is None:
             raise ValueError("a multimodal processor is required for reflection generation")
-        from recurrent.reflection import build_reflection_prompt
+        from recurrent.reflection import build_group_reflection_prompt
         from recurrent.utils import (
             create_attention_mask,
             create_position_ids_vl,
@@ -332,9 +349,11 @@ class SkillOPDManager:
         video_inputs = []
         multi_modal_data = []
         context_lengths = []
-        for trajectory in trajectories:
-            prompt = build_reflection_prompt(
-                trajectory,
+        groups = group_reflection_trajectories(trajectories)
+        for group in groups:
+            trajectory = group[0]
+            prompt = build_group_reflection_prompt(
+                group,
                 self.max_key_transitions,
                 tokenizer=self.tokenizer,
                 visual_token_count=self._visual_token_count(trajectory.observed_video),
@@ -390,10 +409,8 @@ class SkillOPDManager:
                 "position_ids": position_ids,
             },
             non_tensors={
-                "uid": np.asarray([item.trajectory_uid for item in trajectories], dtype=object),
-                "trajectory_uid": np.asarray(
-                    [item.trajectory_uid for item in trajectories], dtype=object
-                ),
+                "uid": np.asarray([group[0].group_uid for group in groups], dtype=object),
+                "group_uid": np.asarray([group[0].group_uid for group in groups], dtype=object),
                 "multi_modal_data": np.asarray(multi_modal_data, dtype=object),
             },
             meta_info={
@@ -409,16 +426,17 @@ class SkillOPDManager:
         )
 
     def generate_reflections(self, trajectories, actor_rollout_wg):
-        from recurrent.reflection import parse_and_validate_reflection
+        from recurrent.reflection import parse_and_validate_group_reflection
 
         if not trajectories:
             return []
         batch = self._build_reflection_batch(trajectories)
         output = actor_rollout_wg.generate_sequences(batch)
-        if len(output) != len(trajectories):
-            raise ValueError("reflection output count does not match trajectory count")
+        groups = group_reflection_trajectories(trajectories)
+        if len(output) != len(groups):
+            raise ValueError("reflection output count does not match group count")
         reflections = []
-        for row, trajectory in enumerate(trajectories):
+        for row, group in enumerate(groups):
             tokens = output.batch["responses"][row].detach().cpu().tolist()
             tokens = [
                 token
@@ -426,11 +444,11 @@ class SkillOPDManager:
                 if token not in {self.tokenizer.pad_token_id, self.tokenizer.eos_token_id}
             ]
             text = self.tokenizer.decode(tokens, skip_special_tokens=True)
-            reflections.append(
-                parse_and_validate_reflection(
+            reflections.extend(
+                parse_and_validate_group_reflection(
                     text,
-                    trajectory,
-                    policy_version=trajectory.policy_version,
+                    group,
+                    policy_version=group[0].policy_version,
                     max_key_transitions=self.max_key_transitions,
                 )
             )

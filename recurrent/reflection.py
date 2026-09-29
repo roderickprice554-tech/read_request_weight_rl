@@ -163,6 +163,98 @@ Valid skip JSON shape:
     return prompt
 
 
+def build_group_reflection_prompt(
+    trajectories,
+    max_key_transitions: int = 3,
+    *,
+    tokenizer=None,
+    visual_token_count: int = 0,
+    max_output_tokens: int = 256,
+    max_context_tokens: int = 32768,
+) -> str:
+    if not trajectories:
+        raise ValueError("reflection group must not be empty")
+    group_uid = trajectories[0].group_uid
+    policy_version = trajectories[0].policy_version
+    if any(item.group_uid != group_uid for item in trajectories):
+        raise ValueError("reflection group contains multiple group_uid values")
+    if any(item.policy_version != policy_version for item in trajectories):
+        raise ValueError("reflection group contains multiple policy versions")
+    rows = []
+    for trajectory in trajectories:
+        transitions = "\n".join(
+            f"Transition {item.transition_index}: boundary={item.current_chunk_boundary}; "
+            f"previous_memory={list(item.previous_memory_tokens)}; "
+            f"Y_{item.transition_index}={list(item.generated_y_t_tokens)}; "
+            f"updated_memory={list(item.updated_memory_tokens)}"
+            for item in trajectory.transitions
+        )
+        rows.append(
+            f"<trajectory uid={json.dumps(trajectory.trajectory_uid)}>\n{transitions}\n"
+            f"Question/options:\n{trajectory.query_text}\n"
+            f"Prediction: {trajectory.prediction_text}\n"
+            f"Prediction correct: {str(trajectory.is_correct).lower()}\n</trajectory>"
+        )
+    prompt = f"""Compare every rollout from the same task and decide which query-independent memory skills should be distilled.
+Use successful and failed rollouts as within-group evidence. Return exactly one JSON object with no markdown or trailing text.
+The root fields are exactly group_uid, policy_version, reflections. reflections must contain exactly one result for every trajectory_uid below.
+Each result has trajectory_uid plus the same apply_opd schema used for a single reflection. Select at most {max_key_transitions} non-final transitions per result.
+Do not copy questions, options, answer indicators, or question-specific numbers into skill text.
+
+group_uid={group_uid}
+policy_version={policy_version}
+<observed_video>one shared attached video</observed_video>
+{chr(10).join(rows)}
+"""
+    prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False)) if tokenizer else len(prompt.split())
+    if prompt_tokens + int(visual_token_count) + int(max_output_tokens) > max_context_tokens:
+        raise ValueError("group reflection context exceeds shared context limit")
+    return prompt
+
+
+def parse_and_validate_group_reflection(
+    text: str,
+    trajectories,
+    policy_version: int,
+    max_key_transitions: int = 3,
+) -> list[ReflectionEnvelope]:
+    if not trajectories:
+        raise ValueError("reflection group must not be empty")
+    source = text.lstrip()
+    try:
+        payload, end = json.JSONDecoder().raw_decode(source)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("group reflection json decoding failed") from exc
+    if source[end:].strip() or not isinstance(payload, dict):
+        raise ValueError("group reflection must be one JSON object")
+    if set(payload) != {"group_uid", "policy_version", "reflections"}:
+        raise ValueError("group reflection fields do not exactly match schema")
+    group_uid = trajectories[0].group_uid
+    if payload["group_uid"] != group_uid:
+        raise ValueError("group_uid mismatch")
+    if payload["policy_version"] != policy_version:
+        raise ValueError("policy_version mismatch")
+    expected = [item.trajectory_uid for item in trajectories]
+    rows = payload["reflections"]
+    if not isinstance(rows, list):
+        raise ValueError("reflections must be a list")
+    actual = [row.get("trajectory_uid") for row in rows if isinstance(row, dict)]
+    if len(actual) != len(rows) or len(set(actual)) != len(actual) or set(actual) != set(expected):
+        raise ValueError("group reflection trajectory membership mismatch")
+    by_uid = {row["trajectory_uid"]: row for row in rows}
+    results = []
+    for trajectory in trajectories:
+        row = dict(by_uid[trajectory.trajectory_uid])
+        row.pop("trajectory_uid")
+        result = parse_and_validate_reflection(
+            json.dumps(row), trajectory, policy_version, max_key_transitions
+        )
+        if not result.reflection_valid:
+            raise ValueError(result.rejection_reason or "invalid group reflection")
+        results.append(result)
+    return results
+
+
 def parse_and_validate_reflection(
     text: str,
     trajectory: ReflectionTrajectory,

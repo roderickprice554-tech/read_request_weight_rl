@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import pytest
 import torch
 
@@ -7,6 +8,7 @@ from recurrent.skill_opd import (
     SkillOPDManager,
     assemble_reflection_trajectories,
     build_opd_annotations,
+    group_reflection_trajectories,
     reward_to_is_correct,
 )
 from verl.protocol import DataProto
@@ -161,11 +163,26 @@ class _ReflectionTokenizer:
     eos_token_id = 99
 
     def decode(self, tokens, skip_special_tokens=True):
-        return (
-            '{"apply_opd":true,"episode_skill":"Track stable identities across views.",'
-            '"key_transitions":[{"transition_index":0,"kind":"correct",'
-            '"memory_attribute":"entity_identity","step_skill":"Preserve object identity across cuts."}]}'
-        )
+        reflection = {
+            "apply_opd": True,
+            "episode_skill": "Track stable identities across views.",
+            "key_transitions": [{
+                "transition_index": 0,
+                "kind": "correct",
+                "memory_attribute": "entity_identity",
+                "step_skill": "Preserve object identity across cuts.",
+            }],
+        }
+        if not tokens:
+            return json.dumps(reflection)
+        return json.dumps({
+            "group_uid": "group",
+            "policy_version": 9,
+            "reflections": [{
+                "trajectory_uid": "group:rollout-0",
+                **reflection,
+            }],
+        })
 
 
 class _RecordingWorker:
@@ -198,6 +215,20 @@ def test_reflection_generation_occurs_after_reward_and_before_actor_update(monke
 
     assert events == ["rollout", "reward", "reflection", "update_actor"]
     assert reflections[0].reflection_valid is True
+
+
+def test_reflection_grouping_supports_mixed_group_sizes():
+    first, second = _assemble()
+    third = __import__("dataclasses").replace(
+        first, group_uid="other", trajectory_uid="other:rollout-0"
+    )
+
+    groups = group_reflection_trajectories([first, second, third])
+
+    assert [[item.trajectory_uid for item in group] for group in groups] == [
+        ["group:rollout-0", "group:rollout-1"],
+        ["other:rollout-0"],
+    ]
 
 
 def test_invalid_reflection_produces_zero_opd_masks_without_changing_rl_mask():

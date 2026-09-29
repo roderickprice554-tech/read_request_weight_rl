@@ -1,8 +1,14 @@
 import json
+from dataclasses import replace
 
 import pytest
 
-from recurrent.reflection import build_reflection_prompt, parse_and_validate_reflection
+from recurrent.reflection import (
+    build_group_reflection_prompt,
+    build_reflection_prompt,
+    parse_and_validate_group_reflection,
+    parse_and_validate_reflection,
+)
 from recurrent.skill_opd import MemoryTransition, ReflectionTrajectory
 
 
@@ -152,3 +158,58 @@ def test_reflection_prompt_enforces_shared_total_context_budget():
             visual_token_count=32760,
             max_output_tokens=256,
         )
+
+
+def _group_response(*trajectories):
+    return json.dumps({
+        "group_uid": trajectories[0].group_uid,
+        "policy_version": trajectories[0].policy_version,
+        "reflections": [
+            {
+                "trajectory_uid": item.trajectory_uid,
+                "apply_opd": False,
+                "episode_skill": None,
+                "key_transitions": [],
+                "skip_reason": "memory_cause_uncertain",
+            }
+            for item in trajectories
+        ],
+    })
+
+
+def test_group_prompt_contains_all_trajectories_and_one_video_marker():
+    first = _trajectory()
+    second = replace(first, trajectory_uid="group-a:rollout-1", prediction_text="A")
+
+    prompt = build_group_reflection_prompt([first, second])
+
+    assert first.trajectory_uid in prompt
+    assert second.trajectory_uid in prompt
+    assert prompt.count("<observed_video>") == 1
+    assert "within-group" in prompt
+
+
+def test_group_response_requires_exact_trajectory_membership():
+    first = _trajectory()
+    second = replace(first, trajectory_uid="group-a:rollout-1")
+
+    with pytest.raises(ValueError, match="trajectory membership"):
+        parse_and_validate_group_reflection(
+            _group_response(first), [first, second], policy_version=9
+        )
+
+
+def test_group_response_returns_original_trajectory_order():
+    first = _trajectory()
+    second = replace(first, trajectory_uid="group-a:rollout-1")
+    payload = json.loads(_group_response(second, first))
+    payload["group_uid"] = first.group_uid
+
+    result = parse_and_validate_group_reflection(
+        json.dumps(payload), [first, second], policy_version=9
+    )
+
+    assert [item.trajectory_uid for item in result] == [
+        first.trajectory_uid,
+        second.trajectory_uid,
+    ]

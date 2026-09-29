@@ -1,7 +1,7 @@
 import base64
 from pathlib import Path
 
-from recurrent.reflection import build_reflection_prompt
+from recurrent.reflection import build_group_reflection_prompt
 
 
 def _sample_video_frames(path: str | Path, max_frames: int = 8) -> list[str]:
@@ -24,10 +24,12 @@ def _sample_video_frames(path: str | Path, max_frames: int = 8) -> list[str]:
     return frames
 
 
-def build_multimodal_content(trajectory, max_frames: int = 8) -> list[dict]:
-    content = [{"type": "text", "text": build_reflection_prompt(trajectory)}]
+def build_multimodal_content(trajectories, max_frames: int = 8) -> list[dict]:
+    if not isinstance(trajectories, (list, tuple)):
+        trajectories = [trajectories]
+    content = [{"type": "text", "text": build_group_reflection_prompt(trajectories)}]
     content.extend(
         {"type": "image_url", "image_url": {"url": frame}}
-        for frame in _sample_video_frames(trajectory.observed_video, max_frames)
+        for frame in _sample_video_frames(trajectories[0].observed_video, max_frames)
     )
     return content
