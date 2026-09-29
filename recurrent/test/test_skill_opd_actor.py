@@ -1,11 +1,11 @@
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_actor_uses_precomputed_modulated_advantage_without_auxiliary_opd_loss():
     actor_source = (
-        REPO_ROOT / "VST-RL" / "verl" / "workers" / "actor" / "dp_actor.py"
+        REPO_ROOT / "verl" / "workers" / "actor" / "dp_actor.py"
     ).read_text(encoding="utf-8")
 
     assert "compute_policy_loss(" in actor_source
@@ -16,7 +16,7 @@ def test_actor_uses_precomputed_modulated_advantage_without_auxiliary_opd_loss()
 
 def test_trainer_converts_reward_to_correctness_and_builds_episode_only_skills():
     trainer_source = (
-        REPO_ROOT / "VST-RL" / "verl" / "trainer" / "ppo" / "ray_trainer.py"
+        REPO_ROOT / "verl" / "trainer" / "ppo" / "ray_trainer.py"
     ).read_text(encoding="utf-8")
 
     assert "reward_to_is_correct" in trainer_source
