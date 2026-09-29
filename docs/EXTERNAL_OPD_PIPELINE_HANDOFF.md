@@ -8,9 +8,9 @@ Each dataset row must provide:
 | --- | --- |
 | `video_context` | Video path, relative to `recurrent.video_memory.config.video_root` or absolute. |
 | `question` / prompt fields | The question and the model-ready QA prompt. |
-| `question_timestamp` | Required Q-arrival time in seconds on the source-video timeline. Frames after this time are forbidden. |
+| `question_timestamp` | Optional explicit Q-arrival time in seconds on the source-video timeline. Frames after this time are forbidden. |
 | answer/reward fields | Ground truth consumed by the configured environment reward function. Ground truth is not copied into the reflection skill text. |
-| `extra_info.duration` | Full source-video duration; used to validate `0 < question_timestamp <= duration`. |
+| `extra_info.duration` | Full sample-video duration; used as `question_timestamp` when no explicit timestamp is present, so VST-RL streams the supplied video through its final frame before asking the question. |
 
 Runtime inputs are the local VST checkpoint, training/validation parquet files,
 video root, reward function configuration, output directory, external reflection

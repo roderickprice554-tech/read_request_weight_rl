@@ -183,6 +183,24 @@ class VideoMemoryDataset(RDataset):
             return video_path
         return os.path.join(self.video_root, video_path)
 
+    def _resolve_question_timestamp(self, raw_row: dict) -> float:
+        key = self.recurrent_config.question_timestamp_key
+        extra_info = raw_row.get("extra_info", {})
+        question_timestamp = raw_row.get(key)
+        if question_timestamp is None:
+            question_timestamp = extra_info.get(key)
+        if question_timestamp is None:
+            question_timestamp = extra_info.get("duration")
+        if question_timestamp is None:
+            raise ValueError(f"missing required {key!r}")
+        question_timestamp = float(question_timestamp)
+        source_duration = float(extra_info.get("duration", question_timestamp))
+        if not 0.0 < question_timestamp <= source_duration:
+            raise ValueError(
+                "question_timestamp must be positive and no later than video duration"
+            )
+        return question_timestamp
+
     def __getitem__(self, item):
         
         self._init_env()
@@ -194,20 +212,7 @@ class VideoMemoryDataset(RDataset):
             video_paths_str = str(video_paths_raw)
 
         extra_info = raw_row.get("extra_info", {})
-        question_timestamp = raw_row.get(
-            self.recurrent_config.question_timestamp_key,
-            extra_info.get(self.recurrent_config.question_timestamp_key),
-        )
-        if question_timestamp is None:
-            raise ValueError(
-                f"missing required {self.recurrent_config.question_timestamp_key!r}"
-            )
-        question_timestamp = float(question_timestamp)
-        source_duration = float(extra_info.get("duration", question_timestamp))
-        if not 0.0 < question_timestamp <= source_duration:
-            raise ValueError(
-                "question_timestamp must be positive and no later than video duration"
-            )
+        question_timestamp = self._resolve_question_timestamp(raw_row)
 
         if self.prog_video:
             dynamic_frames = self._read_frames()

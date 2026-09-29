@@ -237,6 +237,36 @@ def test_video_paths_can_resolve_against_read_only_asset_root():
     assert dataset._resolve_video_path("/absolute/clip.mp4") == "/absolute/clip.mp4"
 
 
+def test_question_timestamp_falls_back_to_sample_duration():
+    dataset = VideoMemoryDataset.__new__(VideoMemoryDataset)
+    dataset.recurrent_config = SimpleNamespace(question_timestamp_key="question_timestamp")
+
+    timestamp = dataset._resolve_question_timestamp(
+        {"extra_info": {"duration": 12.5}}
+    )
+
+    assert timestamp == 12.5
+
+
+def test_explicit_question_timestamp_takes_priority_over_duration():
+    dataset = VideoMemoryDataset.__new__(VideoMemoryDataset)
+    dataset.recurrent_config = SimpleNamespace(question_timestamp_key="question_timestamp")
+
+    timestamp = dataset._resolve_question_timestamp(
+        {"question_timestamp": 4.0, "extra_info": {"duration": 12.5}}
+    )
+
+    assert timestamp == 4.0
+
+
+def test_question_timestamp_requires_timestamp_or_duration():
+    dataset = VideoMemoryDataset.__new__(VideoMemoryDataset)
+    dataset.recurrent_config = SimpleNamespace(question_timestamp_key="question_timestamp")
+
+    with pytest.raises(ValueError, match="missing required 'question_timestamp'"):
+        dataset._resolve_question_timestamp({"extra_info": {}})
+
+
 def test_nonfinal_action_does_not_access_query_fields():
     agent = _video_agent_for_action(step=0, guarded=True)
 
