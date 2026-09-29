@@ -1289,7 +1289,7 @@ class RayPPOTrainer:
                                 observed_video_by_sample = {
                                     index: video
                                     for index, video in enumerate(
-                                        gen_batch.non_tensor_batch["multi_modal_data"]
+                                        gen_batch.non_tensor_batch["observed_video_path"]
                                     )
                                 }
                                 reflection_trajectories = assemble_reflection_trajectories(
@@ -1315,11 +1315,24 @@ class RayPPOTrainer:
                                     ),
                                 )
                                 if reflection_config.get("source", "actor") == "external":
-                                    from recurrent.external_reflection_store import ExternalReflectionStore
+                                    from recurrent.external_reflection_store import (
+                                        ExternalReflectionStore,
+                                        publish_trajectories,
+                                    )
 
+                                    publish_trajectories(
+                                        reflection_config["trajectory_path"],
+                                        reflection_trajectories,
+                                    )
                                     reflections = ExternalReflectionStore(
-                                        reflection_config["external_path"]
-                                    ).get_many(reflection_trajectories)
+                                        reflection_config["external_path"],
+                                        poll_interval_seconds=reflection_config.get(
+                                            "poll_interval_seconds", 1.0
+                                        ),
+                                        timeout_seconds=reflection_config.get(
+                                            "timeout_seconds", None
+                                        ),
+                                    ).wait_for_many(reflection_trajectories)
                                 else:
                                     reflections = skill_opd_manager.generate_reflections(
                                         reflection_trajectories, self.actor_rollout_wg
@@ -1346,6 +1359,17 @@ class RayPPOTrainer:
                                 )
                                 metrics["skill_opd/trajectory_count"] = len(
                                     reflection_trajectories
+                                )
+                                metrics["skill_opd/reflection_request_count"] = len(
+                                    {trajectory.group_uid for trajectory in reflection_trajectories}
+                                )
+                                metrics["skill_opd/memory_steps"] = [
+                                    len(trajectory.transitions)
+                                    for trajectory in reflection_trajectories
+                                ]
+                                metrics["skill_opd/question_timestamp"] = max(
+                                    float(batch.non_tensor_batch["current_chunk_boundary"][row]["seconds"][1])
+                                    for row in final_rows
                                 )
                                 metrics["skill_opd/memory_transition_count"] = sum(
                                     len(trajectory.transitions)
@@ -1769,6 +1793,26 @@ class RayPPOTrainer:
                                 "gpu_peak_allocated_gb": metrics.get(
                                     "perf/max_memory_allocated_gb", None
                                 ),
+                                    "sample_index": self.config.skill_opd.get(
+                                        "smoke_sample_index", None
+                                    ),
+                                    "group_size": self.config.actor_rollout_ref.rollout.n,
+                                    "question_timestamp": metrics[
+                                        "skill_opd/question_timestamp"
+                                    ],
+                                    "memory_steps": metrics["skill_opd/memory_steps"],
+                                    "reflection_request_count": metrics[
+                                        "skill_opd/reflection_request_count"
+                                    ],
+                                    "teacher_valid_row_count": metrics[
+                                        "skill_opd/teacher_valid_row_count"
+                                    ],
+                                    "teacher_skipped_row_count": metrics[
+                                        "skill_opd/teacher_skipped_row_count"
+                                    ],
+                                    "vision_encoder_counts": metrics.get(
+                                        "vision_encoder_counts", {}
+                                    ),
                                     "policy_version": self.global_steps,
                                 }
                             else:

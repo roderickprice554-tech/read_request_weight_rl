@@ -195,6 +195,7 @@ class LLMGenerationManager:
         """
         active_num_list = [] # trace the active number of sample in each turn
         gen_output_list = [] # store I/O batch in each turn, used for policy optimization
+        vision_encoder_counts = {}
         meta_info = gen_batch.meta_info #  do_sample, is_validate, eos/pad are stored in here.
         pad_token_id = self.tokenizer.pad_token_id
         self.agent.start(gen_batch, timing_raw)
@@ -215,6 +216,9 @@ class LLMGenerationManager:
                 logger.info(f'padding done')
             with _timer('mt_gen', timing_raw):
                 gen_output = self.generate_with_graceful_padding(input_ids, vid_message, attention_masks, position_ids, meta_info_gen, batch_uid)
+                vision_encoder_counts.update(
+                    gen_output.meta_info.get("vision_encoder_counts", {})
+                )
                 logger.info('generation done')
             with _timer('mt_update', timing_raw):
                 gen_output = self.agent.update(gen_output)
@@ -229,4 +233,7 @@ class LLMGenerationManager:
         assert sum(final_mask) == len(gen_batch)
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
         output = self._concat_and_validate(gen_output_list, final_mask, sample_index)
+        output.meta_info["metrics"] = {
+            "vision_encoder_counts": vision_encoder_counts,
+        }
         return output, final_mask, sample_index # pyright: ignore

@@ -58,6 +58,30 @@ def audit_enabled_smoke(report: dict) -> None:
         raise ValueError("no trainable Actor parameter changed")
 
 
+def audit_real_one_by_eight(report: dict) -> None:
+    audit_enabled_smoke(report)
+    expected = {
+        "sample_index", "group_size", "question_timestamp", "memory_steps",
+        "reflection_request_count", "teacher_valid_row_count",
+        "teacher_skipped_row_count", "vision_encoder_counts",
+    }
+    missing = expected - set(report)
+    if missing:
+        raise ValueError(f"missing real smoke fields: {sorted(missing)}")
+    if report["sample_index"] != 203 or report["group_size"] != 8:
+        raise ValueError("real smoke must use VST index 203 with eight rollouts")
+    if float(report["question_timestamp"]) != 237.0:
+        raise ValueError("question_timestamp must resolve to the 237-second video end")
+    if report["memory_steps"] != [4] * 8:
+        raise ValueError("every rollout must contain four memory steps")
+    if report["reflection_request_count"] != 1:
+        raise ValueError("reflection must issue one within-group request")
+    if report["teacher_valid_row_count"] + report["teacher_skipped_row_count"] < 8:
+        raise ValueError("teacher row accounting is incomplete")
+    if not report["vision_encoder_counts"]:
+        raise ValueError("vLLM vision diagnostics are missing")
+
+
 def audit_disabled_smoke(report: dict) -> None:
     expected = {"skill_opd_enabled", "opd_branch_executed", "optimizer_completed", "rl_loss"}
     missing = expected - set(report)
@@ -98,11 +122,14 @@ def main():
     parser.add_argument("report", type=Path)
     parser.add_argument("--disabled", action="store_true")
     parser.add_argument("--cpu-code", action="store_true")
+    parser.add_argument("--real-1x8", action="store_true")
     args = parser.parse_args()
     report = json.loads(args.report.read_text(encoding="utf-8"))
     if args.disabled and args.cpu_code:
         parser.error("--disabled and --cpu-code are mutually exclusive")
-    if args.disabled:
+    if args.real_1x8:
+        audit_real_one_by_eight(report)
+    elif args.disabled:
         audit_disabled_smoke(report)
     elif args.cpu_code:
         audit_cpu_code_smoke(report)

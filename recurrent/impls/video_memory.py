@@ -17,7 +17,10 @@ from tqdm import tqdm
 import uuid
 import os
 import pickle
-import lmdb
+try:
+    import lmdb
+except ImportError:
+    lmdb = None
 import hashlib
 
 logger = logging.getLogger(__file__)
@@ -84,7 +87,11 @@ class VideoMemoryDataset(RDataset):
 
         self.env = None
         if self.use_cache:
-            os.makedirs(self.video_cache_dir, exist_ok=True)
+            if lmdb is None:
+                logger.warning("LMDB is unavailable. Disk cache disabled.")
+                self.use_cache = False
+            else:
+                os.makedirs(self.video_cache_dir, exist_ok=True)
 
         if self.prog_video:
             self.prog_start_step = 0
@@ -213,8 +220,10 @@ class VideoMemoryDataset(RDataset):
                 video_paths = [video_paths]
             
             processed_video_list = []
+            resolved_video_paths = []
             for video_path in video_paths:
                 video_path = self._resolve_video_path(video_path)
+                resolved_video_paths.append(video_path)
                 video_tensor = process_video(
                     {"video": video_path}, 
                     fps=2, 
@@ -228,6 +237,7 @@ class VideoMemoryDataset(RDataset):
                 processed_video_list.append(video_array)
 
             multi_modal_data["video"] = processed_video_list
+            row_dict["observed_video_path"] = resolved_video_paths[0]
             
         t, _, h, w = multi_modal_data["video"][0].shape
         context_len = int((t + 1) // 2 * h // 28 * w // 28)
@@ -285,7 +295,9 @@ class VideoMemoryDataset(RDataset):
         return row_dict
 
     def get_bactch_keys(self) -> Tuple[List[str], List[str]]:
-        return ["context_ids", "context_length"], ["prompt_ids", "question_ids"]
+        return ["context_ids", "context_length"], [
+            "prompt_ids", "question_ids", "observed_video_path"
+        ]
 
 # Modified Template for Video Context
 TEMPLATE_TYPE_1 = """{TimeStamp} {VideoClip}"""

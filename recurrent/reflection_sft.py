@@ -76,19 +76,25 @@ def _require_exact_fields(value: Mapping[str, Any], fields: set[str], name: str)
 
 
 def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTrajectory:
-    fields = {
+    common_fields = {
         "trajectory_uid",
         "policy_version",
         "observed_video",
         "transitions",
         "query",
         "prediction",
-        "final_reward",
     }
-    _require_exact_fields(record, fields, "offline trajectory")
-    reward = float(record["final_reward"])
-    if not math.isfinite(reward):
-        raise ValueError("final reward must be finite")
+    if set(record) == common_fields | {"final_reward"}:
+        reward = float(record["final_reward"])
+        if not math.isfinite(reward):
+            raise ValueError("final reward must be finite")
+        is_correct = reward_to_is_correct(reward)
+    elif set(record) == common_fields | {"is_correct"}:
+        if type(record["is_correct"]) is not bool:
+            raise TypeError("offline trajectory is_correct must be boolean")
+        is_correct = record["is_correct"]
+    else:
+        raise ValueError("offline trajectory fields do not match supported schema")
 
     transition_fields = {
         "transition_index",
@@ -126,7 +132,7 @@ def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTraject
         query_text=str(record["query"]),
         prediction_tokens=(),
         prediction_text=str(record["prediction"]),
-        is_correct=reward_to_is_correct(reward),
+        is_correct=is_correct,
         observed_video=record["observed_video"],
     )
 

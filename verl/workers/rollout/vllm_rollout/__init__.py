@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 from importlib.metadata import PackageNotFoundError, version
+from packaging.version import Version
 
 
 def get_version(pkg):
@@ -24,6 +25,10 @@ def get_version(pkg):
 
 package_name = "vllm"
 package_version = get_version(package_name)
+
+
+def _uses_customized_vllm(package_version):
+    return Version(package_version) <= Version("0.6.3")
 
 ###
 # package_version = get_version(package_name)
@@ -38,7 +43,7 @@ else:
     package_version = get_version(package_name)
 ###
 
-if package_version <= "0.6.3":
+if _uses_customized_vllm(package_version):
     vllm_mode = "customized"
     from .fire_vllm_rollout import FIREvLLMRollout  # noqa: F401
     from .vllm_rollout import vLLMRollout  # noqa: F401

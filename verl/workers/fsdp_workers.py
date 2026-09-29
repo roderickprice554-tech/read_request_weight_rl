@@ -225,6 +225,7 @@ class ActorRolloutRefWorker(Worker):
                 config=actor_model_config,
                 attn_implementation="flash_attention_2",
                 trust_remote_code=trust_remote_code,
+                low_cpu_mem_usage=True,
             )
 
             if use_remove_padding or self.ulysses_sequence_parallel_size > 1:
@@ -504,7 +505,7 @@ class ActorRolloutRefWorker(Worker):
                                                         device_map="auto"
                                                         )
                 self.model_vision_encoder = full_model.visual
-                full_model.visual = None
+                full_model.model.visual = None
                 log_gpu_memory_usage("Successful load ViT for embed", logger=logger)
                 del full_model
 
