@@ -32,6 +32,17 @@ actor_rollout_ref:
     use_liger: False
     freeze_vision_tower: False
     enable_embed_cache: False # only true if VLM and vision tower frozened
+    lora_rank: 0
+    lora_alpha: 32
+    lora_dropout: 0.0
+    lora_target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
   actor:
     strategy: fsdp  # This is for backward-compatibility
     train_batch_size: ${data.train_batch_size} ######## ADD: We have to do this. actor_rollout_ref is unware of training batch size

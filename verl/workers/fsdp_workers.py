@@ -60,6 +60,10 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def trainable_parameters(module):
+    return (parameter for parameter in module.parameters() if parameter.requires_grad)
+
+
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
         device_mesh = init_device_mesh("cuda", mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
@@ -257,6 +261,24 @@ class ActorRolloutRefWorker(Worker):
                     if self.rank == 0:
                         print("No vision tower found.")
 
+            lora_rank = int(self.config.model.get("lora_rank", 0))
+            if role == "actor" and lora_rank > 0:
+                from peft import LoraConfig, get_peft_model
+
+                actor_module = get_peft_model(
+                    actor_module,
+                    LoraConfig(
+                        r=lora_rank,
+                        lora_alpha=int(self.config.model.get("lora_alpha", 32)),
+                        target_modules=list(self.config.model.get("lora_target_modules")),
+                        lora_dropout=float(self.config.model.get("lora_dropout", 0.0)),
+                        bias="none",
+                    ),
+                )
+                use_orig_params = True
+                if self.rank == 0:
+                    actor_module.print_trainable_parameters()
+
         torch.distributed.barrier()
 
         if self.rank == 0:
@@ -313,7 +335,7 @@ class ActorRolloutRefWorker(Worker):
             from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 
             actor_optimizer = optim.AdamW(
-                actor_module_fsdp.parameters(),
+                trainable_parameters(actor_module_fsdp),
                 lr=optim_config.lr,
                 betas=optim_config.get("betas", (0.9, 0.999)),
                 weight_decay=optim_config.get("weight_decay", 1e-2),
