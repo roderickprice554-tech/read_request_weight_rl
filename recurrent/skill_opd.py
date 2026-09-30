@@ -34,6 +34,7 @@ class ReflectionTrajectory:
     prediction_text: str
     is_correct: bool
     observed_video: Any
+    observation_cutoff_seconds: float | None = None
 
     def to_analyzer_input(self) -> dict[str, Any]:
         """Construct the analyzer payload from an explicit non-label allowlist."""
@@ -43,6 +44,7 @@ class ReflectionTrajectory:
             "trajectory_uid": self.trajectory_uid,
             "policy_version": self.policy_version,
             "observed_video": self.observed_video,
+            "question_timestamp": self.observation_cutoff_seconds,
             "transitions": [
                 {
                     "transition_index": transition.transition_index,
@@ -133,6 +135,26 @@ def _token_tuple(value) -> tuple[int, ...]:
     return tuple(int(token) for token in value)
 
 
+def observation_cutoff_seconds(boundaries) -> float:
+    ends = []
+    for boundary in boundaries:
+        if boundary is None:
+            continue
+        if isinstance(boundary, Mapping):
+            seconds = boundary.get("seconds")
+        else:
+            seconds = boundary
+        if seconds is None or len(seconds) != 2:
+            continue
+        value = float(seconds[1])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("observation cutoff must be finite and non-negative")
+        ends.append(value)
+    if not ends:
+        raise ValueError("trajectory has no observation cutoff metadata")
+    return max(ends)
+
+
 def assemble_reflection_trajectories(
     *,
     output: DataProto,
@@ -172,6 +194,11 @@ def assemble_reflection_trajectories(
         }
         if len(policy_versions) != 1:
             raise ValueError(f"policy_version mismatch in trajectory_uid {trajectory_uid!r}")
+        cutoff_seconds = observation_cutoff_seconds(
+            output.non_tensor_batch["current_chunk_boundary"][row]
+            for row in rows
+        )
+
 
         transitions = tuple(
             MemoryTransition(
@@ -206,6 +233,7 @@ def assemble_reflection_trajectories(
                 prediction_text=str(prediction_text),
                 is_correct=is_correct,
                 observed_video=observed_video,
+                observation_cutoff_seconds=cutoff_seconds,
             )
         )
 

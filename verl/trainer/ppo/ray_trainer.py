@@ -1368,8 +1368,8 @@ class RayPPOTrainer:
                                     for trajectory in reflection_trajectories
                                 ]
                                 metrics["skill_opd/question_timestamp"] = max(
-                                    float(batch.non_tensor_batch["current_chunk_boundary"][row]["seconds"][1])
-                                    for row in final_rows
+                                    trajectory.observation_cutoff_seconds
+                                    for trajectory in reflection_trajectories
                                 )
                                 metrics["skill_opd/memory_transition_count"] = sum(
                                     len(trajectory.transitions)

@@ -40,6 +40,7 @@ def build_training_command(config, overrides=()):
         "skill_opd.opd_weight_lambda=0.5",
         f"trainer.n_gpus_per_node={config.n_gpus_per_node}",
         f"trainer.default_local_dir={config.checkpoint_dir}",
+        f"trainer.save_freq={config.save_freq}",
         f"trainer.rollout_data_dir={config.log_dir}",
     ]
     if config.train_files is not None:

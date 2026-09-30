@@ -28,6 +28,7 @@ class PipelineConfig:
     lora_dropout: float = 0.0
     n_gpus_per_node: int = 8
     checkpoint_dir: Optional[Path] = None
+    save_freq: int = 1
     log_dir: Optional[Path] = None
     trajectory_path: Optional[Path] = None
     reflection_path: Optional[Path] = None
@@ -50,6 +51,8 @@ class PipelineConfig:
             raise ValueError("lora_rank must be non-negative; 0 disables LoRA")
         if self.reflection_max_frames <= 0:
             raise ValueError("reflection_max_frames must be positive")
+        if self.save_freq <= 0:
+            raise ValueError("save_freq must be positive")
         defaults = {
             "checkpoint_dir": self.output_dir / "checkpoints",
             "log_dir": self.output_dir / "logs",

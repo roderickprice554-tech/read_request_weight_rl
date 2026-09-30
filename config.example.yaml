@@ -33,6 +33,7 @@ reflection_timeout_seconds: 900.0
 n_gpus_per_node: 8
 output_dir: /data/run-output
 checkpoint_dir: /data/run-output/checkpoints
+save_freq: 1
 log_dir: /data/run-output/logs
 trajectory_path: /data/run-output/trajectories.jsonl
 reflection_path: /data/run-output/reflections.jsonl

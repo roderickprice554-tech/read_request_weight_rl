@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 import requests
@@ -10,6 +11,8 @@ from pipeline.deepseek_v4_flash import (
     complete_reflection_groups,
 )
 from pipeline.rl_update import build_training_command
+from pipeline.reflection_request import _sample_frame_indices
+from recurrent.skill_opd import observation_cutoff_seconds
 from recurrent.reflection_sft import offline_record_to_trajectory
 
 
@@ -61,6 +64,7 @@ def test_training_command_covers_recurrent_opd_outputs_and_full_parameter_mode(t
         f"recurrent.video_memory.config.video_root={config.video_root}",
         "recurrent.video_memory.config.final_chunk_write_memory=true",
         "skill_opd.enable=true",
+        "trainer.save_freq=1",
         "skill_opd.reflection.source=external",
         f"skill_opd.reflection.trajectory_path={config.trajectory_path}",
         f"skill_opd.reflection.external_path={config.reflection_path}",
@@ -121,3 +125,36 @@ def test_multimodal_api_rejection_names_required_capability(monkeypatch, tmp_pat
 
     with pytest.raises(RuntimeError, match="must support image"):
         client.reflect_group([trajectory])
+
+def test_observation_cutoff_ignores_text_only_final_boundary():
+    boundaries = [
+        {"seconds": [0.0, 120.0]},
+        {"seconds": [120.0, 237.0]},
+        None,
+    ]
+
+    assert observation_cutoff_seconds(boundaries) == 237.0
+    trainer_source = Path("verl/trainer/ppo/ray_trainer.py").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'batch.non_tensor_batch["current_chunk_boundary"][row]["seconds"][1]'
+        not in trainer_source
+    )
+
+
+def test_reflection_sampling_stops_at_observation_cutoff(tmp_path):
+    video = tmp_path / "a.mp4"
+    video.touch()
+    record = trajectory_record(video)
+    record["question_timestamp"] = 237.0
+
+    trajectory = offline_record_to_trajectory(record)
+    indices = _sample_frame_indices(
+        frame_count=1000, max_frames=8, fps=2.0,
+        end_seconds=trajectory.observation_cutoff_seconds,
+    )
+
+    assert trajectory.observation_cutoff_seconds == 237.0
+    assert max(indices) == 474
+    assert _sample_frame_indices(1000, 8, fps=2.0, end_seconds=None)[-1] == 999

@@ -114,7 +114,8 @@ Paths are independently configurable. The example produces:
 - `reflections.jsonl` - validated external reflections;
 - `reflection_requests.jsonl` and `reflection_errors.jsonl` - audit trail;
 - `logs/trainer.log` and `logs/reflection-worker.log`;
-- `checkpoints/` - model/optimizer/trainer checkpoints.
+- `checkpoints/` - model/optimizer/trainer checkpoints; positive `save_freq`
+  also saves on the final training step.
 
 Accepted trajectory UIDs are skipped when reflection generation restarts.
 API keys are passed through the environment and omitted from

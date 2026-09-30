@@ -33,10 +33,10 @@ def _output():
             "previous_memory_tokens": np.array([[], [], None, None], dtype=object),
             "current_chunk_boundary": np.array(
                 [
-                    {"frames": [0, 2]},
-                    {"frames": [0, 2]},
-                    {"frames": [2, 4]},
-                    {"frames": [2, 4]},
+                    {"frames": [0, 2], "seconds": [0.0, 1.0]},
+                    {"frames": [0, 2], "seconds": [0.0, 1.0]},
+                    {"frames": [2, 4], "seconds": [1.0, 2.0]},
+                    {"frames": [2, 4], "seconds": [1.0, 2.0]},
                 ],
                 dtype=object,
             ),
@@ -69,7 +69,11 @@ def _episode_output():
             "transition_index": np.array([0, 1, None], dtype=object),
             "previous_memory_tokens": np.array([[], [11], None], dtype=object),
             "current_chunk_boundary": np.array(
-                [{"frames": [0, 2]}, {"frames": [2, 4]}, {"frames": [4, 6]}],
+                [
+                    {"frames": [0, 2], "seconds": [0.0, 1.0]},
+                    {"frames": [2, 4], "seconds": [1.0, 2.0]},
+                    {"frames": [4, 6], "seconds": [2.0, 3.0]},
+                ],
                 dtype=object,
             ),
             "generated_y_t_tokens": np.array([[11], [12], None], dtype=object),

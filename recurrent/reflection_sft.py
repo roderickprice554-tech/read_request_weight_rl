@@ -13,6 +13,7 @@ from recurrent.reflection import (
 )
 from recurrent.skill_opd import (
     MemoryTransition,
+    observation_cutoff_seconds,
     ReflectionTrajectory,
     reward_to_is_correct,
 )
@@ -84,12 +85,13 @@ def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTraject
         "query",
         "prediction",
     }
-    if set(record) == common_fields | {"final_reward"}:
+    record_fields = set(record) - {"question_timestamp"}
+    if record_fields == common_fields | {"final_reward"}:
         reward = float(record["final_reward"])
         if not math.isfinite(reward):
             raise ValueError("final reward must be finite")
         is_correct = reward_to_is_correct(reward)
-    elif set(record) == common_fields | {"is_correct"}:
+    elif record_fields == common_fields | {"is_correct"}:
         if type(record["is_correct"]) is not bool:
             raise TypeError("offline trajectory is_correct must be boolean")
         is_correct = record["is_correct"]
@@ -119,6 +121,15 @@ def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTraject
     if not transitions:
         raise ValueError("offline trajectory requires at least one memory transition")
 
+    raw_cutoff = record.get("question_timestamp")
+    if raw_cutoff is None:
+        cutoff_seconds = observation_cutoff_seconds(
+            transition.current_chunk_boundary for transition in transitions
+        )
+    else:
+        cutoff_seconds = observation_cutoff_seconds(
+            [{"seconds": [0.0, raw_cutoff]}]
+        )
     trajectory_uid = str(record["trajectory_uid"])
     return ReflectionTrajectory(
         group_uid=trajectory_uid.split(":rollout-", 1)[0],
@@ -134,6 +145,7 @@ def offline_record_to_trajectory(record: Mapping[str, Any]) -> ReflectionTraject
         prediction_text=str(record["prediction"]),
         is_correct=is_correct,
         observed_video=record["observed_video"],
+        observation_cutoff_seconds=cutoff_seconds,
     )
 
 
