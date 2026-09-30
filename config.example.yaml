@@ -1,7 +1,39 @@
-trajectories: /data/trajectories.jsonl
+# Local inputs
+train_files: /data/train.parquet
+val_files: /data/validation.parquet
 video_root: /data/videos
 vst_model: /models/vst-sft
-reflection_api_url: https://api.deepseek.com
-reflection_model: deepseek-v4-flash
+# Used only by --stage reflect for offline reflection generation.
+trajectories: /data/offline-trajectories.jsonl
+
+# One logical RL batch: 16 prompts x 8 rollouts = 128 trajectories.
+train_batch_size: 16
+rollout_n: 8
+ppo_mini_batch_size: 16
+ppo_micro_batch_size_per_gpu: 1
+
+# Positive rank enables LoRA. Set to 0 for full-parameter training.
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.0
+
+# false: final row receives last video chunk + memory + question.
+# true: tail first becomes memory, then final row is memory + question only.
+final_chunk_write_memory: false
+
+# OpenAI-compatible endpoint whose selected model accepts image_url content.
+reflection_api_url: https://your-provider.example/v1
+reflection_model: your-multimodal-model
+reflection_api_key_env: REFLECTION_API_KEY
+reflection_max_frames: 8
+reflection_poll_interval_seconds: 1.0
+reflection_timeout_seconds: 900.0
+
+# Runtime and artifacts
+n_gpus_per_node: 8
 output_dir: /data/run-output
+checkpoint_dir: /data/run-output/checkpoints
+log_dir: /data/run-output/logs
+trajectory_path: /data/run-output/trajectories.jsonl
+reflection_path: /data/run-output/reflections.jsonl
 stage: all

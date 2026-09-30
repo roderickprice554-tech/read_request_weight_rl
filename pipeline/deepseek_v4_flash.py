@@ -8,21 +8,38 @@ from recurrent.reflection import parse_and_validate_group_reflection
 from recurrent.skill_opd import group_reflection_trajectories
 from pipeline.reflection_request import build_multimodal_content
 
+def complete_reflection_groups(trajectories, rollout_n: int):
+    groups = group_reflection_trajectories(trajectories)
+    complete = []
+    for group in groups:
+        if len(group) > rollout_n:
+            raise ValueError(
+                f"group {group[0].group_uid!r} has more than {rollout_n} trajectories"
+            )
+        if len(group) == rollout_n:
+            complete.append(group)
+    return complete
+
+
 
 class DeepSeekReflectionClient:
-    def __init__(self, base_url: str, api_key: str, model: str = "deepseek-v4-flash", *, session=None):
+    def __init__(
+        self, base_url: str, api_key: str, model: str = "deepseek-v4-flash",
+        *, max_frames: int = 8, session=None,
+    ):
         if not api_key:
-            raise ValueError("DeepSeek API key is required for reflection generation")
+            raise ValueError("reflection API key is required")
         self.base_url, self.api_key, self.model = base_url.rstrip("/"), api_key, model
+        self.max_frames = max_frames
         self.session = session or requests.Session()
 
-    def reflect_group(self, trajectories, *, max_frames: int = 8):
+    def reflect_group(self, trajectories, *, max_frames: int | None = None):
+        max_frames = self.max_frames if max_frames is None else max_frames
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": build_multimodal_content(trajectories, max_frames)}],
             "temperature": 0,
             "max_tokens": 2048,
-            "thinking": {"type": "disabled"},
             "response_format": {"type": "json_object"},
         }
         response = self.session.post(
@@ -31,7 +48,14 @@ class DeepSeekReflectionClient:
             json=body,
             timeout=300,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = getattr(response, "text", "")
+            raise RuntimeError(
+                "multimodal reflection request failed; the configured endpoint/model "
+                f"must support image input. Provider response: {detail[:500]}"
+            ) from exc
         raw = response.json()["choices"][0]["message"]["content"]
         parsed = parse_and_validate_group_reflection(
             raw, trajectories, trajectories[0].policy_version
@@ -54,9 +78,15 @@ def _append_jsonl(path: Path, value: dict):
         stream.flush()
 
 
-def generate_reflections(trajectories, client, output_dir: str | Path, *, retries: int = 1):
+def generate_reflections(
+    trajectories, client, output_dir: str | Path, *, retries: int = 1,
+    accepted_path: str | Path | None = None,
+):
     output_dir = Path(output_dir)
-    accepted_path = output_dir / "reflections.jsonl"
+    accepted_path = (
+        Path(accepted_path) if accepted_path is not None
+        else output_dir / "reflections.jsonl"
+    )
     accepted = set()
     if accepted_path.exists():
         accepted = {json.loads(line)["trajectory_uid"] for line in accepted_path.read_text(encoding="utf-8").splitlines() if line.strip()}
@@ -87,4 +117,5 @@ def generate_reflections(trajectories, client, output_dir: str | Path, *, retrie
                 "policy_version": group[0].policy_version,
                 "error": str(error),
             })
+            raise error
     return accepted_path
