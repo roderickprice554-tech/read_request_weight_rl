@@ -253,14 +253,26 @@ def create_position_ids_vl(attention_mask: torch.Tensor, processor, vid_inputs, 
     for idx, item in enumerate(input_ids):
         # 1) Get per-sample mask (Seq_Len,).
         cur_mask = attention_mask[idx]
+
+        # Some recurrent turns are intentionally text-only (completed memory +
+        # question after the tail video chunk has already been memorized).
+        cur_vid_input = vid_inputs[idx]
+        if cur_vid_input is None:
+            video_grid_thw = None
+            second_per_grid_ts = None
+        else:
+            video_grid_thw = cur_vid_input.get("video_grid_thw", None)
+            second_per_grid_ts = cur_vid_input.get(
+                "second_per_grid_ts", None
+            )
         
         # 2) Build 3D RoPE (3, Seq_Len).
         # get_rope_index typically handles video/image-specific logic.
         vid_pos_id = get_rope_index(
             processor=processor,
             input_ids=item,
-            video_grid_thw=vid_inputs[idx].get("video_grid_thw", None), # Use .get for safer optional access.
-            second_per_grid_ts=vid_inputs[idx].get("second_per_grid_ts", None),
+            video_grid_thw=video_grid_thw,
+            second_per_grid_ts=second_per_grid_ts,
             attention_mask=cur_mask, 
         )
         

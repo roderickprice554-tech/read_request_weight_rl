@@ -38,6 +38,13 @@ class VideoMemoryConfig(RConfig):
     prompt_type: str
     max_video_frame: int
     video_root: Optional[str] = None
+    # false:
+    #   last chunk + previous memory + Q -> final answer
+    # true:
+    #   last chunk -> memory transition
+    #   completed memory + Q -> final answer
+    #   (the last video chunk is not sent twice)
+    final_chunk_write_memory: bool = False
 
     @property
     def max_raw_input_length(self):
@@ -189,6 +196,17 @@ class VideoMemoryDataset(RDataset):
         else:
             video_paths_str = str(video_paths_raw)
 
+        # The observation cutoff is part of the decoded-video cache identity.
+        # Otherwise the same video could incorrectly reuse frames cached under
+        # a different question_timestamp.
+        raw_extra_info = raw_row.get("extra_info", {}) or {}
+        raw_question_timestamp = raw_row.get("question_timestamp", None)
+        if raw_question_timestamp is None and isinstance(raw_extra_info, dict):
+            raw_question_timestamp = raw_extra_info.get("question_timestamp")
+        video_paths_str = (
+            f"{video_paths_str}|question_timestamp={raw_question_timestamp}"
+        )
+
         if self.prog_video:
             dynamic_frames = self._read_frames()
         else:
@@ -211,6 +229,22 @@ class VideoMemoryDataset(RDataset):
 
         chat = row_dict.pop(self.prompt_key)
         question = row_dict.pop('question')
+
+        # Optional video observation boundary:
+        #   1) row["question_timestamp"]
+        #   2) extra_info["question_timestamp"]
+        #   3) absent -> decode through the physical end of the video
+        extra_info = row_dict.get("extra_info", {}) or {}
+        question_timestamp = row_dict.pop("question_timestamp", None)
+        if question_timestamp is None and isinstance(extra_info, dict):
+            question_timestamp = extra_info.get("question_timestamp")
+        if question_timestamp is not None:
+            question_timestamp = float(question_timestamp)
+            if not np.isfinite(question_timestamp) or question_timestamp < 0:
+                raise ValueError(
+                    "question_timestamp must be a finite non-negative number, "
+                    f"got {question_timestamp!r}"
+                )
         
         multi_modal_data = {}
 
@@ -224,10 +258,19 @@ class VideoMemoryDataset(RDataset):
             for video_path in video_paths:
                 video_path = self._resolve_video_path(video_path)
                 resolved_video_paths.append(video_path)
+
+                # Important: restrict the temporal range before frame sampling.
+                # When no question_timestamp is provided, video_end is omitted,
+                # so qwen-vl-utils naturally decodes until EOF.
+                video_spec = {"video": video_path}
+                if question_timestamp is not None:
+                    video_spec["video_start"] = 0.0
+                    video_spec["video_end"] = question_timestamp
+
                 video_tensor = process_video(
-                    {"video": video_path}, 
-                    fps=2, 
-                    fps_max_frames=dynamic_frames, 
+                    video_spec,
+                    fps=2,
+                    fps_max_frames=dynamic_frames,
                     max_pixels=160 * 28 * 28
                 )
                 if isinstance(video_tensor, torch.Tensor):
@@ -266,9 +309,28 @@ class VideoMemoryDataset(RDataset):
             'second_per_grid_ts': [1.0]
         }
 
-        extra_info = row_dict.get("extra_info", {})
-        row_dict["video_duration"] = extra_info.get('duration', 0.0)
-        row_dict["index"] = extra_info.get("index", 0)
+        source_duration = (
+            float(extra_info.get("duration", 0.0) or 0.0)
+            if isinstance(extra_info, dict)
+            else 0.0
+        )
+        if question_timestamp is None:
+            # No external cutoff: the observation boundary is EOF.
+            observed_duration = source_duration
+        elif source_duration > 0:
+            observed_duration = min(source_duration, question_timestamp)
+        else:
+            observed_duration = question_timestamp
+
+        row_dict["question_timestamp"] = (
+            question_timestamp
+            if question_timestamp is not None
+            else (source_duration or None)
+        )
+        row_dict["video_duration"] = observed_duration
+        row_dict["index"] = (
+            extra_info.get("index", 0) if isinstance(extra_info, dict) else 0
+        )
         row_dict["sample_uuid"] = str(uuid4())
 
        # Stage 3: write to LMDB cache.
@@ -296,7 +358,8 @@ class VideoMemoryDataset(RDataset):
 
     def get_bactch_keys(self) -> Tuple[List[str], List[str]]:
         return ["context_ids", "context_length"], [
-            "prompt_ids", "question_ids", "observed_video_path"
+            "prompt_ids", "question_ids", "observed_video_path",
+            "question_timestamp"
         ]
 
 # Modified Template for Video Context
@@ -320,6 +383,15 @@ TEMPLATE_FINAL_BOXED_TYPE_2 = """{TimeStamp} {VideoClip}
 
 {PromptFinal}
 
+Your answer:
+"""
+
+# Used only when final_chunk_write_memory=True.
+# The final video chunk has already been consumed into memory, so this turn is
+# strictly text-only: completed memory + Q.
+TEMPLATE_FINAL_MEMORY_ONLY = """{EndTime} Based only on the completed Video Memory, answer the following Problem.
+{PromptFinal}
+Output the final answer in \\boxed{{}}.
 Your answer:
 """
 
@@ -347,10 +419,25 @@ class VideoMemoryAgent(RAgent):
         elif self.config.prompt_type == "type2":
             self.token_message_template = TokenTemplate(self.chat_template.format(message=TEMPLATE_TYPE_2,previous=MEMORY_PROMPT), tokenizer)
             self.token_final_message_template = TokenTemplate(self.chat_template.format(message=TEMPLATE_FINAL_BOXED_TYPE_2,previous=MEMORY_PROMPT), tokenizer)
-        
-        self.max_input_length = self.config.max_raw_input_length + max(self.token_message_template.length, self.token_final_message_template.length)
+
+        self.token_final_memory_only_template = TokenTemplate(
+            self.chat_template.format(
+                message=TEMPLATE_FINAL_MEMORY_ONLY,
+                previous=MEMORY_PROMPT,
+            ),
+            tokenizer,
+        )
+
+        max_template_length = max(
+            self.token_message_template.length,
+            self.token_final_message_template.length,
+            self.token_final_memory_only_template.length,
+        )
+        self.max_input_length = (
+            self.config.max_raw_input_length + max_template_length
+        )
         logger.info(f'\n[RECURRENT] max_input_length: {self.config.max_raw_input_length}(raw) '
-              f'+ {max(self.token_message_template.length, self.token_final_message_template.length)}(message_template) = {self.max_input_length}\n')
+              f'+ {max_template_length}(message_template) = {self.max_input_length}\n')
         
         self.NO_MEMORY_TOKENS = tokenizer.encode("", add_special_tokens=False)
     
@@ -379,8 +466,13 @@ class VideoMemoryAgent(RAgent):
             num_frames,
             device=self.ctx_length.device,
             dtype=torch.long)
+        self.last_memory_end_frame = torch.zeros_like(self.num_frames)
         self.memory = np.empty(self.bsz, dtype=object)
         self.is_final = False
+        self.last_chunk_memorized = False
+        self.force_last_memory_turn = False
+        self.text_only_final_turn = False
+        self.current_target_indices = []
     
     @override
     def action(self) -> Tuple[List[torch.Tensor], dict]:
@@ -390,20 +482,50 @@ class VideoMemoryAgent(RAgent):
         self.active_mask = active_mask
         
         # Decide whether to enter final turn.
-        is_final_turn = (active_mask.sum().item() == 0)
+        #
+        # Legacy path:
+        #   tail video + previous memory + Q -> answer
+        #
+        # final_chunk_write_memory=True:
+        #   tail video -> memory transition
+        #   completed memory + Q -> text-only answer
+        reached_tail = (active_mask.sum().item() == 0)
+        self.force_last_memory_turn = bool(
+            getattr(
+                self.config, "final_chunk_write_memory", False
+            )
+            and reached_tail
+            and not self.last_chunk_memorized
+        )
+        is_final_turn = reached_tail and not self.force_last_memory_turn
+        self.text_only_final_turn = bool(
+            is_final_turn
+            and getattr(
+                self.config, "final_chunk_write_memory", False
+            )
+            and self.last_chunk_memorized
+        )
         self.is_final = is_final_turn
 
         # 2) Select parameters based on current turn.
         if is_final_turn:
-            # Final mode: process all samples with the final template.
             calc_step = self.step
             target_indices = list(range(self.bsz))
-            template = self.token_final_message_template
+            template = (
+                self.token_final_memory_only_template
+                if self.text_only_final_turn
+                else self.token_final_message_template
+            )
+        elif self.force_last_memory_turn:
+            # Consume the last/remainder video clip as a normal memory turn.
+            calc_step = self.step
+            target_indices = list(range(self.bsz))
+            template = self.token_message_template
         else:
-            # Normal mode: process only active samples with the standard template.
             calc_step = self.step
             target_indices = torch.nonzero(active_mask).squeeze(1).tolist()
             template = self.token_message_template
+        self.current_target_indices = target_indices
 
         # 3) Prepare vectorized batch fields.
         batch_data = self.gen_batch.non_tensor_batch
@@ -413,13 +535,17 @@ class VideoMemoryAgent(RAgent):
         if is_final_turn:
             prompts = batch_data['prompt_ids']
 
-        if not is_final_turn:
+        if not is_final_turn and not self.force_last_memory_turn:
             target_start = self.config.video_clip_token_size * calc_step
             target_end = self.config.video_clip_token_size * (calc_step + 1)
             
             start_frame_idx = (torch.floor(target_start / self.tokens_per_frame) * 2).int()
             end_frame_idx = (torch.floor(target_end / self.tokens_per_frame) * 2).int()
         else:
+            # Tail/remainder indices are used by:
+            #   1) legacy direct-answer mode
+            #   2) the forced tail-memory transition
+            # The later text-only final turn does not consume these frames.
             target_start = (self.ctx_length // self.config.video_clip_token_size) * self.config.video_clip_token_size
             target_end = self.ctx_length
             start_frame_idx = (torch.floor(target_start / self.tokens_per_frame) * 2).int()
@@ -449,30 +575,45 @@ class VideoMemoryAgent(RAgent):
         }
 
         for idx in tqdm(target_indices):
-            # A) Slice current video segment.
-            s_idx, e_idx = start_frame_idx[idx].item(), end_frame_idx[idx].item()
+            # A) Slice current video segment, except on the text-only final turn.
+            if self.text_only_final_turn:
+                s_idx = e_idx = self.num_frames[idx].item()
+                self.video_inputs.append(None)
+                self.video_messages.append(None)
+            else:
+                if self.force_last_memory_turn or is_final_turn:
+                    s_idx = self.last_memory_end_frame[idx].item()
+                    e_idx = self.num_frames[idx].item()
+                else:
+                    s_idx, e_idx = (
+                        start_frame_idx[idx].item(),
+                        end_frame_idx[idx].item(),
+                    )
 
-            raw_msg = batch_data['multi_modal_inputs'][idx]
+                raw_msg = batch_data['multi_modal_inputs'][idx]
+                vgw = raw_msg['video_grid_thw'].clone()
+                vgw[0,0] = int((e_idx - s_idx)/2)
+                vid_message = {
+                    'video_grid_thw': vgw,
+                    'second_per_grid_ts': raw_msg['second_per_grid_ts'],
+                }
+                self.video_inputs.append(vid_message)
+
+                video_clip = mm_data[idx].copy()
+                video_clip['video'] = list(mm_data[idx]['video'])
+                video_clip['video'][0] = video_clip['video'][0][s_idx:e_idx]
+                self.video_messages.append(video_clip)
+
             self.batch_uids.append(batch_data['uid'][idx])
-            s_id = self.tokens_per_frame[idx] * 2 * s_idx 
-            e_id = self.tokens_per_frame[idx] * 2 * e_idx
-            vgw = raw_msg['video_grid_thw'].clone()
-            vgw[0,0] = int((e_idx - s_idx)/2)
-            vid_message = {
-                'video_grid_thw':vgw,
-                'second_per_grid_ts':raw_msg['second_per_grid_ts'],
-            }
-            self.video_inputs.append(vid_message)
-
-            video_clip = mm_data[idx].copy()
-            video_clip['video'] = list(mm_data[idx]['video']) 
-            video_clip['video'][0] = video_clip['video'][0][s_idx:e_idx]
-            self.video_messages.append(video_clip)
 
             # B) Compute clip timestamps.
-            t_factor = durations[idx] / self.num_frames[idx]
-            s_time = s_idx * t_factor
-            e_time = e_idx * t_factor
+            duration = float(durations[idx])
+            t_factor = duration / max(int(self.num_frames[idx]), 1)
+            if self.text_only_final_turn:
+                s_time = e_time = duration
+            else:
+                s_time = s_idx * t_factor
+                e_time = e_idx * t_factor
 
             self.pending_turn_metadata['group_uid'].append(batch_data['group_uid'][idx])
             self.pending_turn_metadata['trajectory_uid'].append(batch_data['trajectory_uid'][idx])
@@ -482,22 +623,37 @@ class VideoMemoryAgent(RAgent):
             if not is_final_turn:
                 previous_memory = list(self.memory[idx]) if self.memory[idx] is not None else []
             self.pending_turn_metadata['previous_memory_tokens'].append(previous_memory)
-            self.pending_turn_metadata['current_chunk_boundary'].append({
-                'frames': [s_idx, e_idx],
-                'seconds': [float(s_time), float(e_time)],
-            })
+            if self.text_only_final_turn:
+                # No video chunk is consumed in this turn.
+                self.pending_turn_metadata['current_chunk_boundary'].append(None)
+            else:
+                self.pending_turn_metadata['current_chunk_boundary'].append({
+                    'frames': [s_idx, e_idx],
+                    'seconds': [float(s_time), float(e_time)],
+                })
+                if not is_final_turn:
+                    self.last_memory_end_frame[idx] = e_idx
             self.pending_turn_metadata['final_mask'].append(is_final_turn)
             
             ts_str = f"Time={s_time:.1f}-{e_time:.1f}s"
             ts_tokens = self.tokenizer.encode(ts_str, add_special_tokens=False)
 
             # C) Build template kwargs.
-            vid_pad_num = (e_idx - s_idx + 1) // 2 * self.tokens_per_frame[idx]
             fmt_kwargs = {
                 'memory': self.memory[idx] if self.memory[idx] is not None else self.NO_MEMORY_TOKENS,
-                'TimeStamp': ts_tokens,
-                'VideoClip': torch.tensor([151652] + [151656] * vid_pad_num + [151653]),
             }
+
+            if not self.text_only_final_turn:
+                vid_pad_num = (
+                    (e_idx - s_idx + 1) // 2
+                    * self.tokens_per_frame[idx]
+                )
+                fmt_kwargs['TimeStamp'] = ts_tokens
+                fmt_kwargs['VideoClip'] = torch.tensor(
+                    [151652]
+                    + [151656] * vid_pad_num
+                    + [151653]
+                )
 
             # Add final-only fields when in final mode.
             if is_final_turn:
@@ -588,31 +744,38 @@ class VideoMemoryAgent(RAgent):
             # Update memory with the text description/summary of the video clip
             time_stamp = self._get_time_stamp_ids(gen_output)
             raw_responses = unpad(self.tokenizer, gen_output.batch['responses'], remove_eos=True)
-            re_map_id = (self.active_mask.int().cumsum(dim=0)-1).tolist()
-            for i, is_active in enumerate(self.active_mask):
-                if is_active:
-                    ts_item = time_stamp[re_map_id[i]]
-                    if hasattr(ts_item, 'tolist'): 
-                        ts_item = ts_item.tolist()
-                    elif isinstance(ts_item, np.ndarray):
-                        ts_item = ts_item.tolist()
-                        
-                    resp_item = raw_responses[re_map_id[i]]
-                    if hasattr(resp_item, 'tolist'): 
-                        resp_item = resp_item.tolist()
-                    elif isinstance(resp_item, np.ndarray):
-                        resp_item = resp_item.tolist()
-                    
-                    new_content = ts_item + resp_item + [198]
-                    
-                    if self.memory[i] is None:
-                        self.memory[i] = new_content
-                    else:
-                        self.memory[i] += new_content
 
-                    output_idx = re_map_id[i]
-                    generated_tokens[output_idx] = list(resp_item)
-                    updated_memory_tokens[output_idx] = list(self.memory[i])
+            # Output rows are aligned with current_target_indices. This is also
+            # correct for the forced tail-memory turn, where active_mask is
+            # already all-False but every trajectory still has one last memory
+            # transition to write.
+            for output_idx, sample_idx in enumerate(self.current_target_indices):
+                ts_item = time_stamp[output_idx]
+                if hasattr(ts_item, 'tolist'):
+                    ts_item = ts_item.tolist()
+                elif isinstance(ts_item, np.ndarray):
+                    ts_item = ts_item.tolist()
+
+                resp_item = raw_responses[output_idx]
+                if hasattr(resp_item, 'tolist'):
+                    resp_item = resp_item.tolist()
+                elif isinstance(resp_item, np.ndarray):
+                    resp_item = resp_item.tolist()
+
+                new_content = ts_item + resp_item + [198]
+
+                if self.memory[sample_idx] is None:
+                    self.memory[sample_idx] = new_content
+                else:
+                    self.memory[sample_idx] += new_content
+
+                generated_tokens[output_idx] = list(resp_item)
+                updated_memory_tokens[output_idx] = list(
+                    self.memory[sample_idx]
+                )
+
+            if self.force_last_memory_turn:
+                self.last_chunk_memorized = True
 
         def object_array(items):
             result = np.empty(len(items), dtype=object)

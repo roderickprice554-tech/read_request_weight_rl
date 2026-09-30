@@ -694,7 +694,7 @@ class ActorRolloutRefWorker(Worker):
         if data.meta_info.get("skill_opd", {}).get("enable", False):
             probe_parameter = next(
                 parameter for parameter in self.actor_module_fsdp.parameters()
-                if parameter.requires_grad
+                if parameter.requires_grad and parameter.numel() > 0
             )
             parameter_probe = (
                 probe_parameter,

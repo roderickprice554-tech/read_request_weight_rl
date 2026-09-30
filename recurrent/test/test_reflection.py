@@ -187,6 +187,12 @@ def test_group_prompt_contains_all_trajectories_and_one_video_marker():
     assert second.trajectory_uid in prompt
     assert prompt.count("<observed_video>") == 1
     assert "within-group" in prompt
+    assert "apply_opd must be the JSON boolean true or false, never a string or array" in prompt
+    assert '"apply_opd":true' in prompt
+    assert '"apply_opd":false' in prompt
+    assert "kind must be preserve or correct" in prompt
+    assert "memory_attribute must be one of" in prompt
+    assert "skip_reason must be one of" in prompt
 
 
 def test_group_response_requires_exact_trajectory_membership():

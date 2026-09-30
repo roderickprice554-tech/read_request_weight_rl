@@ -33,3 +33,24 @@ def test_rl_actor_has_explicit_language_lora_configuration():
     assert "lora_alpha: 32" in config
     for module in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"):
         assert module in config
+
+
+def test_real_recurrent_smoke_disables_reference_kl_loss():
+    script = (REPO_ROOT / "scripts" / "run_real_1x8_lora_smoke.sh").read_text(
+        encoding="utf-8"
+    )
+
+    trainer = (REPO_ROOT / "verl" / "trainer" / "ppo" / "ray_trainer.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "actor_rollout_ref.actor.use_kl_loss=false" in script
+    assert "actor_rollout_ref.actor.ppo_mini_batch_size=1" in script
+    assert "export RAY_memory_usage_threshold=0.995" in script
+    assert 'raise NotImplementedError("KL penalty is not implemented for recurrent.")' not in trainer
+    assert 'batch.meta_info["skill_opd"] = {"enable": True}' in trainer
+
+    worker = (REPO_ROOT / "verl" / "workers" / "fsdp_workers.py").read_text(
+        encoding="utf-8"
+    )
+    assert "if parameter.requires_grad and parameter.numel() > 0" in worker

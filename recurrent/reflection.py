@@ -199,6 +199,16 @@ def build_group_reflection_prompt(
 Use successful and failed rollouts as within-group evidence. Return exactly one JSON object with no markdown or trailing text.
 The root fields are exactly group_uid, policy_version, reflections. reflections must contain exactly one result for every trajectory_uid below.
 Each result has trajectory_uid plus the same apply_opd schema used for a single reflection. Select at most {max_key_transitions} non-final transitions per result.
+apply_opd must be the JSON boolean true or false, never a string or array.
+For apply_opd=true, each result has exactly: trajectory_uid, apply_opd, episode_skill, key_transitions.
+For apply_opd=false, each result has exactly: trajectory_uid, apply_opd, episode_skill, key_transitions, skip_reason.
+Each key transition has exactly: transition_index, kind, memory_attribute, step_skill.
+kind must be preserve or correct.
+memory_attribute must be one of: entity_identity, state_change, temporal_order, event_existence, count, spatial_relation, visible_text, compression.
+For apply_opd=false set episode_skill=null and key_transitions=[].
+skip_reason must be one of: memory_cause_uncertain, answer_only_error, insufficient_evidence, invalid_trajectory.
+Valid apply result: {{"trajectory_uid":"the exact uid","apply_opd":true,"episode_skill":"query-independent general skill","key_transitions":[{{"transition_index":0,"kind":"preserve","memory_attribute":"compression","step_skill":"query-independent transition skill"}}]}}
+Valid skip result: {{"trajectory_uid":"the exact uid","apply_opd":false,"episode_skill":null,"key_transitions":[],"skip_reason":"memory_cause_uncertain"}}
 Do not copy questions, options, answer indicators, or question-specific numbers into skill text.
 
 group_uid={group_uid}

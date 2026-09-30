@@ -1676,9 +1676,6 @@ class RayPPOTrainer:
                             # turns of a sample will have the same final reward, now we mapping turns to samples
                             batch.batch['token_level_scores'] = batch.batch['trajectory_reward']
 
-                            if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
-                                raise NotImplementedError("KL penalty is not implemented for recurrent.")
-                            
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
 
@@ -1710,6 +1707,8 @@ class RayPPOTrainer:
                                 batch.batch['no_padding_mask'] = torch.ones(len(batch), dtype=torch.bool)
 
                         # update actor
+                        if skill_opd_config.get("enable", False):
+                            batch.meta_info["skill_opd"] = {"enable": True}
                         with _timer("update_actor", timing_raw):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
 

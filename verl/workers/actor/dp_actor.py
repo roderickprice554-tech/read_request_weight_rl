@@ -41,6 +41,17 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _concat_precomputed_video_embeds(multi_modal_embeds):
+    video_embeds = [
+        embed["video"]
+        for embed in multi_modal_embeds
+        if embed is not None and embed.get("video") is not None
+    ]
+    if not video_embeds:
+        return None
+    return torch.cat(video_embeds, dim=0).to(torch.bfloat16)
+
+
 class DataParallelPPOActor(BasePPOActor):
     def __init__(self, config, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None):
         """When optimizer is None, it is Reference Policy"""
@@ -161,11 +172,11 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs: # (bs, response_len)
         """
         response_length = micro_batch["responses"].size(-1)
-        video_embed = []
+        video_embed = None
         if "multi_modal_embeds" in micro_batch:
-            for embed in micro_batch["multi_modal_embeds"]:
-                video_embed.append(embed['video'])
-            video_embed = torch.cat(video_embed, dim=0).to(torch.bfloat16)
+            video_embed = _concat_precomputed_video_embeds(
+                micro_batch["multi_modal_embeds"]
+            )
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             input_ids = micro_batch["input_ids"]

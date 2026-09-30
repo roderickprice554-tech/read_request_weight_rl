@@ -274,6 +274,10 @@ recurrent:
       max_video_frame: 384
       video_key: video_context
       video_root: null
+      # false: last chunk is sent with previous memory + Q for final answer
+      # true:  last chunk first writes memory; final answer uses
+      #        completed memory + Q only
+      final_chunk_write_memory: false
       video_clip_token_size: 6000
       max_prompt_length: 1000
       max_memorization_length: 4000

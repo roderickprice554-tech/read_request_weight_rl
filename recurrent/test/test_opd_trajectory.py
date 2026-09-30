@@ -194,6 +194,7 @@ def _video_agent_for_action(step, guarded):
     agent.ctx_length = torch.tensor([6])
     agent.tokens_per_frame = torch.tensor([1])
     agent.num_frames = torch.tensor([12])
+    agent.last_memory_end_frame = torch.tensor([step * 4], dtype=torch.long)
     agent.memory = np.empty(1, dtype=object)
     agent.memory[0] = [91]
     agent.bsz = 1

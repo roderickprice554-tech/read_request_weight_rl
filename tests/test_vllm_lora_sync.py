@@ -20,7 +20,7 @@ def test_rollout_enables_and_passes_versioned_lora_request():
     assert "lora_request=self.lora_request" in source
 
 
-def test_sharding_manager_exports_adapter_instead_of_full_model():
+def test_sharding_manager_syncs_base_once_then_exports_adapters():
     source = (
         REPO_ROOT / "verl" / "workers" / "sharding_manager" / "fsdp_vllm.py"
     ).read_text(encoding="utf-8")
@@ -29,7 +29,14 @@ def test_sharding_manager_exports_adapter_instead_of_full_model():
     )
 
     assert "def select_lora_state_dict(" in source
+    assert "def select_base_state_dict(" in source
     assert "if self.lora_rank > 0:" in source
+    assert "self.base_weights_synced = False" in source
+    assert "if not self.base_weights_synced:" in source
+    assert "self.update_params(select_base_state_dict(params))" in source
+    assert "self.base_weights_synced = True" in source
+    assert "base_state[name] = tensor" in source
+    assert 'name.replace(".base_layer.", ".")' not in source
     assert "self.export_lora_adapter(params)" in source
     assert "rollout=rollout" in worker_source
     assert "lora_rank=lora_rank" in worker_source

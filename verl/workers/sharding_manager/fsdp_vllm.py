@@ -42,6 +42,17 @@ def select_lora_state_dict(state_dict):
     return {name: tensor for name, tensor in state_dict.items() if "lora_" in name}
 
 
+def select_base_state_dict(state_dict):
+    base_state = {}
+    for name, tensor in state_dict.items():
+        if "lora_" in name:
+            continue
+        if name.startswith("base_model.model."):
+            name = name[len("base_model.model.") :]
+        base_state[name] = tensor
+    return base_state
+
+
 class FSDPVLLMShardingManager(BaseShardingManager):
     @check_cuda_is_available()
     def __init__(
@@ -65,6 +76,7 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         self.rollout = rollout
         self.lora_rank = int(lora_rank)
         self.lora_version = 0
+        self.base_weights_synced = False
         self.lora_root = None
         if self.lora_rank > 0:
             root = tempfile.mkdtemp(prefix="verl-vllm-lora-") if torch.distributed.get_rank() == 0 else None
@@ -121,6 +133,9 @@ class FSDPVLLMShardingManager(BaseShardingManager):
                 self.inference_engine.wake_up(tags=["weights"])
             else:
                 self.inference_engine.wake_up()
+            if not self.base_weights_synced:
+                self.update_params(select_base_state_dict(params))
+                self.base_weights_synced = True
             self.export_lora_adapter(params)
             del params
             if self.offload_param:
