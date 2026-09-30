@@ -27,6 +27,7 @@ def test_rl_actor_has_explicit_language_lora_configuration():
 
     assert 'if role == "actor" and lora_rank > 0:' in source
     assert "get_peft_model(" in source
+    assert 'exclude_modules=r".*visual(?:\\..*)?"' in source
     assert "trainable_parameters(actor_module_fsdp)" in source
     assert "lora_rank: 0" in config
     assert "lora_alpha: 32" in config

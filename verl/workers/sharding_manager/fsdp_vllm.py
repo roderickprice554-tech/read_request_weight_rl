@@ -15,6 +15,8 @@
 import inspect
 import logging
 import os
+import shutil
+import tempfile
 
 import torch
 from torch.distributed.device_mesh import DeviceMesh
@@ -36,6 +38,10 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def select_lora_state_dict(state_dict):
+    return {name: tensor for name, tensor in state_dict.items() if "lora_" in name}
+
+
 class FSDPVLLMShardingManager(BaseShardingManager):
     @check_cuda_is_available()
     def __init__(
@@ -46,6 +52,8 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         full_params: bool = False,
         device_mesh: DeviceMesh = None,
         offload_param: bool = False,
+        rollout=None,
+        lora_rank: int = 0,
     ):
         self.module = module
         # For AsyncLLM, inference_engine and model_runner are defer intialized in vLLMAsyncRollout.load_model
@@ -54,6 +62,15 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         self.model_config = model_config
         self.device_mesh = device_mesh
         self.offload_param = offload_param
+        self.rollout = rollout
+        self.lora_rank = int(lora_rank)
+        self.lora_version = 0
+        self.lora_root = None
+        if self.lora_rank > 0:
+            root = tempfile.mkdtemp(prefix="verl-vllm-lora-") if torch.distributed.get_rank() == 0 else None
+            roots = [root]
+            torch.distributed.broadcast_object_list(roots, src=0)
+            self.lora_root = roots[0]
 
         # Full params
         self.full_params = full_params
@@ -99,7 +116,19 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         # Copy, not share memory
         load_format = "hf" if self.full_params else "dtensor"
 
-        if vllm_version in (
+        if self.lora_rank > 0:
+            if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                self.inference_engine.wake_up(tags=["weights"])
+            else:
+                self.inference_engine.wake_up()
+            self.export_lora_adapter(params)
+            del params
+            if self.offload_param:
+                offload_fsdp_model_to_cpu(self.module)
+            torch.cuda.empty_cache()
+            if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                self.inference_engine.wake_up(tags=["kv_cache"])
+        elif vllm_version in (
             "0.5.4",
             "0.6.3",
         ):
@@ -183,3 +212,37 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         world_size = torch.distributed.get_world_size()
         loaded_params = model.load_weights(((name, param.full_tensor() if world_size != 1 and hasattr(param, "full_tensor") else param) for name, param in updated_params.items()))
         logger.info("vLLM load weights, loaded_params: %d", len(loaded_params))
+
+    def export_lora_adapter(self, state_dict=None):
+        from peft import get_peft_model_state_dict
+        from safetensors.torch import save_file
+
+        if state_dict is None:
+            state_dict = self.module.state_dict()
+        sharded_adapter = select_lora_state_dict(state_dict)
+        adapter_state = {
+            name: tensor.full_tensor() if hasattr(tensor, "full_tensor") else tensor
+            for name, tensor in sharded_adapter.items()
+        }
+        version = self.lora_version
+        adapter_path = os.path.join(self.lora_root, f"adapter-{version}")
+        if torch.distributed.get_rank() == 0:
+            peft_model = self.module.module
+            os.makedirs(adapter_path, exist_ok=False)
+            peft_model.peft_config["default"].save_pretrained(adapter_path)
+            adapter_state = get_peft_model_state_dict(
+                peft_model,
+                state_dict=adapter_state,
+                save_embedding_layers=False,
+            )
+            save_file(
+                {name: tensor.detach().cpu().contiguous() for name, tensor in adapter_state.items()},
+                os.path.join(adapter_path, "adapter_model.safetensors"),
+            )
+        torch.distributed.barrier()
+        self.rollout.set_lora_adapter(adapter_path, version)
+        logger.warning("Activated vLLM LoRA adapter version %d from %s", version, adapter_path)
+        torch.distributed.barrier()
+        if torch.distributed.get_rank() == 0 and version >= 2:
+            shutil.rmtree(os.path.join(self.lora_root, f"adapter-{version - 2}"))
+        self.lora_version += 1

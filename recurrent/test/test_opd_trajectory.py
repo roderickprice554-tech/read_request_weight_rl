@@ -340,6 +340,31 @@ def test_manager_requires_integer_policy_version():
         LLMGenerationManager._annotate_turn_output(output, policy_version=None)
 
 
+def test_manager_left_pads_different_turn_prompt_lengths_before_concat():
+    first = DataProto.from_dict(tensors={
+        "prompts": torch.tensor([[1, 2]]),
+        "responses": torch.tensor([[8, 9]]),
+        "input_ids": torch.tensor([[1, 2, 8, 9]]),
+        "attention_mask": torch.ones(1, 4, dtype=torch.long),
+        "position_ids": torch.arange(4).view(1, 1, 4).expand(1, 3, 4),
+    })
+    second = DataProto.from_dict(tensors={
+        "prompts": torch.tensor([[3, 4, 5]]),
+        "responses": torch.tensor([[6, 7]]),
+        "input_ids": torch.tensor([[3, 4, 5, 6, 7]]),
+        "attention_mask": torch.ones(1, 5, dtype=torch.long),
+        "position_ids": torch.arange(5).view(1, 1, 5).expand(1, 3, 5),
+    })
+
+    combined = LLMGenerationManager._concat_and_validate(
+        [first, second], torch.tensor([False, True]), torch.tensor([0, 0]),
+        pad_token_id=0,
+    )
+
+    assert combined.batch["prompts"].tolist() == [[0, 1, 2], [3, 4, 5]]
+    assert combined.batch["input_ids"].tolist() == [[0, 1, 2, 8, 9], [3, 4, 5, 6, 7]]
+
+
 def test_manager_retains_row_aligned_video_inputs_for_reflection_and_teacher():
     output = _synthetic_recurrent_output()[:2]
     videos = np.array([{"video": "a"}, {"video": "b"}], dtype=object)

@@ -38,6 +38,7 @@ from omegaconf import DictConfig
 from tensordict import TensorDict
 from vllm import LLM, SamplingParams
 from vllm.distributed import parallel_state as vllm_ps
+from vllm.lora.request import LoRARequest
 from vllm.worker.worker_base import WorkerWrapperBase
 
 from verl import DataProto
@@ -204,6 +205,8 @@ class vLLMRollout(BaseRollout):
         """
         super().__init__()
         self.config = config
+        self.lora_rank = int(kwargs.get("lora_rank", 0))
+        self.lora_request = None
         self.vision_encoder_counter = VisionEncoderCounter()
         self._vision_chunk_index = 0
 
@@ -285,6 +288,9 @@ class vLLMRollout(BaseRollout):
             enable_prefix_caching=True,
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
+            enable_lora=self.lora_rank > 0,
+            max_lora_rank=self.lora_rank,
+            max_loras=1,
         )
 
         # Offload vllm model to reduce peak memory usage
@@ -309,6 +315,13 @@ class vLLMRollout(BaseRollout):
         self.sampling_params = SamplingParams(**kwargs)
 
         self.pad_token_id = tokenizer.pad_token_id
+
+    def set_lora_adapter(self, path: str, version: int):
+        self.lora_request = LoRARequest(
+            lora_name=f"ppo-policy-{version}",
+            lora_int_id=version + 1,
+            lora_path=path,
+        )
 
     @contextmanager
     def update_sampling_params(self, **kwargs):
@@ -462,6 +475,7 @@ class vLLMRollout(BaseRollout):
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
                 use_tqdm=False,
+                lora_request=self.lora_request,
             )
 
             # TODO(sgm): disable logprob when recompute_log_prob is enable

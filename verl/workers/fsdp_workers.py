@@ -15,9 +15,11 @@
 The main entry point to run the PPO algorithm
 """
 
+import json
 import logging
 import os
 import warnings
+from copy import deepcopy
 from typing import Union
 
 import psutil
@@ -62,6 +64,49 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 def trainable_parameters(module):
     return (parameter for parameter in module.parameters() if parameter.requires_grad)
+
+
+def actor_init_plan(rank, world_size, tie_word_embeddings):
+    distributed = world_size > 1
+    return {
+        "load_checkpoint": rank == 0,
+        "tie_word_embeddings": tie_word_embeddings and not distributed,
+        "use_meta": distributed and rank != 0,
+    }
+
+
+def select_visual_checkpoint_tensors(weight_map):
+    selected = {}
+    for checkpoint_key, shard in weight_map.items():
+        if checkpoint_key.startswith("visual."):
+            selected.setdefault(shard, {})[checkpoint_key] = checkpoint_key.removeprefix("visual.")
+    return selected
+
+
+def load_visual_encoder(model_path, vision_config, device):
+    from accelerate import init_empty_weights
+    from safetensors import safe_open
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+
+    index_path = os.path.join(model_path, "model.safetensors.index.json")
+    with open(index_path, encoding="utf-8") as index_file:
+        shard_tensors = select_visual_checkpoint_tensors(json.load(index_file)["weight_map"])
+    if not shard_tensors:
+        raise ValueError(f"No visual.* weights found in {index_path}")
+
+    with init_empty_weights():
+        visual = Qwen2_5_VisionTransformerPretrainedModel(vision_config)
+
+    state_dict = {}
+    for shard, tensors in shard_tensors.items():
+        with safe_open(os.path.join(model_path, shard), framework="pt", device="cpu") as checkpoint:
+            state_dict.update({module_key: checkpoint.get_tensor(checkpoint_key) for checkpoint_key, module_key in tensors.items()})
+
+    missing, unexpected = visual.load_state_dict(state_dict, strict=False, assign=True)
+    if missing or unexpected:
+        raise RuntimeError(f"Invalid visual state dict: missing={missing}, unexpected={unexpected}")
+    visual.requires_grad_(False)
+    return visual.to(device=device, dtype=torch.bfloat16).eval()
 
 
 def create_device_mesh(world_size, fsdp_size):
@@ -210,7 +255,14 @@ class ActorRolloutRefWorker(Worker):
             print(f"Model config after override: {actor_model_config}")
 
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
-        init_context = get_init_weight_context_manager(use_meta_tensor=not actor_model_config.tie_word_embeddings, mesh=self.device_mesh)
+        init_plan = actor_init_plan(
+            self.rank,
+            self.world_size,
+            actor_model_config.tie_word_embeddings,
+        )
+        load_model_config = deepcopy(actor_model_config)
+        load_model_config.tie_word_embeddings = init_plan["tie_word_embeddings"]
+        init_context = get_init_weight_context_manager(use_meta_tensor=init_plan["use_meta"], mesh=self.device_mesh)
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -219,14 +271,20 @@ class ActorRolloutRefWorker(Worker):
             else:
                 actor_module_class = AutoModelForCausalLM
 
-            actor_module = actor_module_class.from_pretrained(
-                pretrained_model_name_or_path=local_path,
-                torch_dtype=torch_dtype,
-                config=actor_model_config,
-                attn_implementation="flash_attention_2",
-                trust_remote_code=trust_remote_code,
-                low_cpu_mem_usage=True,
-            )
+            if init_plan["load_checkpoint"]:
+                actor_module = actor_module_class.from_pretrained(
+                    pretrained_model_name_or_path=local_path,
+                    torch_dtype=torch_dtype,
+                    config=load_model_config,
+                    attn_implementation="flash_attention_2",
+                    trust_remote_code=trust_remote_code,
+                    low_cpu_mem_usage=True,
+                )
+            else:
+                actor_module = actor_module_class.from_config(
+                    load_model_config,
+                    trust_remote_code=trust_remote_code,
+                )
 
             if use_remove_padding or self.ulysses_sequence_parallel_size > 1:
                 from verl.models.transformers.monkey_patch import apply_monkey_patch
@@ -272,6 +330,7 @@ class ActorRolloutRefWorker(Worker):
                         r=lora_rank,
                         lora_alpha=int(self.config.model.get("lora_alpha", 32)),
                         target_modules=list(self.config.model.get("lora_target_modules")),
+                        exclude_modules=r".*visual(?:\..*)?",
                         lora_dropout=float(self.config.model.get("lora_dropout", 0.0)),
                         bias="none",
                     ),
@@ -368,6 +427,8 @@ class ActorRolloutRefWorker(Worker):
     def _build_rollout(self, trust_remote_code=False):
         from torch.distributed.device_mesh import init_device_mesh
 
+        lora_rank = int(self.config.model.get("lora_rank", 0))
+
         # TODO(sgm): support FSDP hybrid shard for larger model
         infer_tp = self.config.rollout.tensor_model_parallel_size
         dp = self.world_size // infer_tp
@@ -406,7 +467,8 @@ class ActorRolloutRefWorker(Worker):
                     device_mesh=rollout_device_mesh,
                     trust_remote_code=trust_remote_code,
                     model_vision_encoder=self.model_vision_encoder,
-                    if_embed_cache=self.config.model.enable_embed_cache
+                    if_embed_cache=self.config.model.enable_embed_cache,
+                    lora_rank=lora_rank,
                 )
             else:
                 raise NotImplementedError("vllm_mode must be 'customized' or 'spmd'")
@@ -421,6 +483,8 @@ class ActorRolloutRefWorker(Worker):
                 full_params="hf" in self.config.rollout.load_format,
                 device_mesh=rollout_device_mesh,
                 offload_param=self._is_offload_param,
+                rollout=rollout,
+                lora_rank=lora_rank,
             )
             log_gpu_memory_usage("After building sharding manager", logger=logger)
 
@@ -498,16 +562,12 @@ class ActorRolloutRefWorker(Worker):
             self.actor_module = self.actor_module_fsdp._fsdp_wrapped_module
             self.model_vision_encoder = None
             if self.config.model.enable_embed_cache:
-                from transformers import AutoModelForImageTextToText
-                full_model = AutoModelForImageTextToText.from_pretrained(self.config.model.path,
-                                                        trust_remote_code=True,
-                                                        torch_dtype=torch.bfloat16,
-                                                        device_map="auto"
-                                                        )
-                self.model_vision_encoder = full_model.visual
-                full_model.model.visual = None
+                self.model_vision_encoder = load_visual_encoder(
+                    self.config.model.path,
+                    self.actor_model_config.vision_config,
+                    torch.cuda.current_device(),
+                )
                 log_gpu_memory_usage("Successful load ViT for embed", logger=logger)
-                del full_model
 
             if self._is_offload_param:
                 offload_fsdp_model_to_cpu(self.actor_module_fsdp)

@@ -180,7 +180,25 @@ class LLMGenerationManager:
         )
 
     @staticmethod
-    def _concat_and_validate(gen_output_list, final_mask, sample_index) -> DataProto:
+    def _concat_and_validate(gen_output_list, final_mask, sample_index, pad_token_id=0) -> DataProto:
+        if all("prompts" in item.batch for item in gen_output_list):
+            max_prompt_length = max(item.batch["prompts"].size(-1) for item in gen_output_list)
+            for item in gen_output_list:
+                padding = max_prompt_length - item.batch["prompts"].size(-1)
+                if padding == 0:
+                    continue
+                item.batch["prompts"] = torch.nn.functional.pad(
+                    item.batch["prompts"], (padding, 0), value=pad_token_id
+                )
+                item.batch["input_ids"] = torch.nn.functional.pad(
+                    item.batch["input_ids"], (padding, 0), value=pad_token_id
+                )
+                item.batch["attention_mask"] = torch.nn.functional.pad(
+                    item.batch["attention_mask"], (padding, 0), value=0
+                )
+                item.batch["position_ids"] = torch.nn.functional.pad(
+                    item.batch["position_ids"], (padding, 0), value=0
+                )
         output = DataProto.concat(gen_output_list)
         output.batch['final_mask'] = final_mask.to(output.batch.device)
         if 'trajectory_uid' in output.non_tensor_batch:
@@ -232,7 +250,9 @@ class LLMGenerationManager:
         assert len(sample_index) == sum(active_num_list)
         assert sum(final_mask) == len(gen_batch)
         logger.info(f"ACTIVE_TRAJ_NUM: {active_num_list}")
-        output = self._concat_and_validate(gen_output_list, final_mask, sample_index)
+        output = self._concat_and_validate(
+            gen_output_list, final_mask, sample_index, pad_token_id=pad_token_id
+        )
         output.meta_info["metrics"] = {
             "vision_encoder_counts": vision_encoder_counts,
         }
